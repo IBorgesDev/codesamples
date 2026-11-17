@@ -33,7 +33,10 @@ resend.
   partitions.
 - A group leader reads its 256 shards with parallel `GetAsync` and writes a partial under a known key.
   The root leader reads every partial the same way, writes the total to version-fenced replicas and
-  broadcasts it on MessagingService. The root adopts one group without a live leader per pass.
+  broadcasts it on MessagingService. The root adopts one group without a live leader per pass. The
+  root pass runs in its own thread, one at a time, every `planner.root_interval`: the 2 s pass
+  interval, or the next multiple of it that covers how long reading every group takes (4 s at
+  ~1,000 groups, 6 s at ~3,000), with a lease of 2.5 intervals. Group passes keep their pace.
 - About 8 hash-chosen candidates contest each lease, not every server; leases renew at half their
   TTL. Candidates are drawn from **live** servers: each entry carries the time of its server's last
   flush (heartbeats re-flush every 30 s), so the passes count servers seen in the last 90 s apart
@@ -47,10 +50,18 @@ resend.
   server count.
 - Each server shows `total + its own unsent contributions`, and a counter never goes down on screen.
 
-**Redis backend** (`service/`): the same counter. A Lua script keeps the maximum per server
-and option and moves the totals by the difference, atomically. Requests are batched every 25 ms, one
-script call per event per batch, and every request waits for its batch to land, so an ack still
-means stored. The response carries the totals, so one request publishes and reads. A server
+**Redis backend** (`service/`): the same counter, split like the MemoryStore one. Each event has
+`EVENTS_SHARDS` shards (16 by default), stored with the event when it is created: changing the
+setting later would move servers to other shards and count them twice, so it only applies to new
+events (events from before shards existed keep one). A server always writes shard
+`hash(server) % shards`, and each shard has its own hash tag, so on a Redis Cluster
+(`REDIS_CLUSTER_NODES`) the shards spread over the nodes. A Lua script per shard keeps the maximum per server and option and moves that
+shard's totals by the difference, atomically. The event total is the sum of its shards and its
+version the sum of theirs, so both only grow. Requests are batched every 25 ms, one script call per
+touched shard per batch, and every request waits for its batch to land, so an ack still means
+stored. The response carries the totals, so one request publishes and reads: shards the batch did
+not touch come from the instance's copy, at most `EVENTS_TOTALS_REFRESH_MS` (1 s) old, and a goal
+is marked reached at most that late. `GET /v1/events/:id` always reads every shard. A server
 publishes every event that is due, including one it only reads (no votes yet), and Roblox encodes
 that empty table as `[]`, so the service takes `[]` as an empty contribution.
 
@@ -62,11 +73,15 @@ the servers had acknowledged exactly (2,323,844). All 17 service tests pass agai
 `mise run stress` (constant arrival rate, same VM, k6 included) finds the ceiling of one instance:
 12,000 publishes/s at p99 66.6 ms with the instance at ~60% of a core; past ~13,000/s the Node
 process saturates and p99 goes over 250 ms. Every step stayed exact and none failed. The limit at
-scale is Redis, not the API: the publish script costs 11.4 µs of Redis CPU per entry (Redis
-`commandstats` over 2.4M publishes), and every key of one event shares a hash tag, so one event
-lives on one Redis core: ~44,000 publishes/s with 50% headroom, which is ~131,000 servers
-flushing every ~3 s, ~1M CCU at 8 players per server, for one event. Above that the HTTP backend
-needs the event split across Redis nodes by server, as the MemoryStore backend does with shards.
+scale is Redis, not the API. Before shards, every key of an event shared one hash tag, so one event
+lived on one Redis core: 11.4 µs of Redis CPU per entry (`commandstats` over 2.4M publishes) is
+~44,000 publishes/s with 50% headroom, ~1M CCU at 8 players per server, for one event. With shards
+the script costs 9.9 µs per entry (options checked in a Lua table instead of a set) and each node
+takes only its shards. On a three-master Redis Cluster in Docker, 4,000 and 8,000 publishes/s
+stayed exact with p99 under 66 ms and the script time split 44% / 29% / 27% over the nodes
+(16 shards fall unevenly on 3 nodes; more shards per node evens it out). 76M CCU at 8 per server is
+~3.2M publishes/s, ~31 Redis cores of script time, so ~64 nodes with headroom and at least 256
+shards, plus ~260 API instances at 12,000/s each.
 
 End to end, a Studio playtest on the HTTP backend (`LiveEventBackend = "http"`, the service behind
 `mise run tunnel`) is what found the `[]` case: every publish got a 400 while the game kept showing
@@ -81,13 +96,16 @@ reached the service within one flush and the game showed the service's total eve
 | Saturday peak of a group of games (7.56M) | 945,568 | 37,823 / 148 | 7.2% | 6.5 s / 14.4 s / 28 s |
 | Single-game peak (14.3M) | 1,786,691 | 71,468 / 280 | 6.4% | 6.5 s / 14.6 s / 35 s |
 | Largest single-game peak (25.8M) | 3,229,528 | 129,182 / 505 | 6.0% | 6.5 s / 14.9 s / 46 s |
+| 25.8M at 4 per server | 6,459,056 | 258,363 / 1,010 | 11.4% | 7.5 s / 17.7 s / 75 s |
+| 76M at 8 per server | 9,500,000 | 380,000 / 1,485 | 5.6% | 7.5 s / 18.5 s / 99 s |
+| 76M at 4 per server | 19,000,000 | 760,000 / 2,969 | 11.1% | 8.5 s / 22.8 s / 178 s |
 
-The same spec searches the largest CCU that still fits every limit: ~5.73M servers, so 22.9M CCU
-at 4 players per server, 45.9M at 8 and 114.7M at 20. The first limit is always the root pass:
-the root leader reads every group's partial, 32 at a time, and past ~1,010 groups that takes over
-the 2 s pass interval. RU, keys, memory and MessagingService still have room there. The check is
-stricter than the service needs (passes run one after another and the root lease lasts 10 s), so
-past the ceiling totals get slower before anything breaks.
+The same spec searches the largest CCU that still fits every limit: ~32.4M servers, so 129M CCU at
+4 players per server and 259M at 8, where the worst staleness reaches its 30 s bound
+(`max_staleness`). Before the root pass was spaced by its own length it had to fit in 2 s, which
+capped the design at ~5.73M servers (22.9M CCU at 4 per server, 45.9M at 8) with every other limit
+still far off. Without MessagingService, servers poll one of at most 1,024 replicas, so that
+fallback slows to minutes at the largest server counts.
 
 Simpler designs break much earlier (same spec): every server broadcasting its count ~64 CCU, every
 server contesting one leader key ~664 CCU, one counter key ~2,000 CCU, one total key read by

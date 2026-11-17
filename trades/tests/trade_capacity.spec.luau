@@ -14,8 +14,11 @@ return function()
         { name = "1.27M CCU, 20 per server", ccu = 1_273_618, players_per_server = 20 },
         { name = "7.56M CCU, 8 per server", ccu = 7_564_537, players_per_server = 8 },
         { name = "25.8M CCU, 8 per server", ccu = 25_836_222, players_per_server = 8 },
+        { name = "25.8M CCU, 4 per server", ccu = 25_836_222, players_per_server = 4 },
+        { name = "76M CCU, 8 per server", ccu = 76_000_000, players_per_server = 8 },
+        { name = "76M CCU, 4 per server", ccu = 76_000_000, players_per_server = 4 },
     }
-    const CEILING_FLOOR = 25_836_222
+    const CEILING_FLOOR = 76_000_000
     const CEILING_STEP = 10_000
     const CEILING_MAX = 1_000_000_000
     const SERVER_SIZES = { 4, 8 }

@@ -47,6 +47,8 @@ export type Plan = {
     delivery_limit_game: number,
     group_pass_seconds: number,
     root_pass_seconds: number,
+    root_interval: number,
+    root_lease: number,
     staleness_typical: number,
     staleness_worst: number,
     staleness_failover: number,
@@ -114,6 +116,24 @@ function planner.pass_interval(ccu: number, events: number, shards_read: number?
     return math.clamp(interval, tuning.live_event.aggregate_interval, tuning.live_event.max_aggregate_interval)
 end
 
+function planner.root_pass_seconds(groups: number, per_group: number): number
+    local calls = 1 + rounds(groups) + tuning.live_event.max_orphans * (rounds(per_group) + 1) + 1 + 1
+
+    return calls * tuning.platform.call_seconds
+end
+
+function planner.root_interval(groups: number, per_group: number): number
+    local step = tuning.live_event.aggregate_interval
+
+    return math.max(step, math.ceil(planner.root_pass_seconds(groups, per_group) / step) * step)
+end
+
+function planner.root_lease(interval: number): number
+    local config = tuning.live_event
+
+    return math.max(config.lease_seconds, interval * config.lease_passes)
+end
+
 function planner.listing_ru(): number
     local store = tuning.platform.memory_store
 
@@ -169,10 +189,12 @@ function planner.plan(scenario: Scenario, overrides: { shards: number? }?): Plan
         )
 
     local group_calls = 1 + rounds(per_group) + 1
-    local root_calls = 1 + rounds(groups) + config.max_orphans * (rounds(per_group) + 1) + 1 + 1
+    local root_seconds = planner.root_pass_seconds(groups, per_group)
+    local root_interval = planner.root_interval(groups, per_group)
+    local root_lease = planner.root_lease(root_interval)
 
     local flush_window = config.flush_interval + config.flush_jitter
-    local pipeline = 2 * config.aggregate_interval + (group_calls + root_calls) * limits.call_seconds
+    local pipeline = config.aggregate_interval + root_interval + group_calls * limits.call_seconds + root_seconds
     local http_per_minute = per_minute(config.http_flush_interval + config.flush_jitter / 2)
 
     return {
@@ -205,13 +227,14 @@ function planner.plan(scenario: Scenario, overrides: { shards: number? }?): Plan
         deliveries_per_game = scenario.events * passes * servers,
         delivery_limit_game = messaging.per_game_base + messaging.per_game_per_server * servers,
         group_pass_seconds = group_calls * limits.call_seconds,
-        root_pass_seconds = root_calls * limits.call_seconds,
-        staleness_typical = flush_window / 2 + config.aggregate_interval + messaging.delivery_seconds / 2,
+        root_pass_seconds = root_seconds,
+        root_interval = root_interval,
+        root_lease = root_lease,
+        staleness_typical = flush_window / 2
+            + (config.aggregate_interval + root_interval) / 2
+            + messaging.delivery_seconds / 2,
         staleness_worst = flush_window + pipeline + messaging.delivery_seconds,
-        staleness_failover = flush_window + pipeline + messaging.delivery_seconds + math.max(
-            config.lease_seconds,
-            config.aggregate_interval * config.lease_passes
-        ),
+        staleness_failover = flush_window + pipeline + messaging.delivery_seconds + root_lease,
         staleness_outage = flush_window + pipeline + config.stale_after + poll_every,
         http_per_server_minute = http_per_minute,
         http_service_rps = servers * http_per_minute / SECONDS_PER_MINUTE,
@@ -248,7 +271,8 @@ function planner.check(plan: Plan): { string }
     require_that(plan.deliveries_per_topic <= plan.delivery_limit_topic * safety, "deliveries per topic")
     require_that(plan.deliveries_per_game <= plan.delivery_limit_game * safety, "deliveries per experience")
     require_that(plan.group_pass_seconds <= tuning.live_event.aggregate_interval * safety, "group pass too slow")
-    require_that(plan.root_pass_seconds <= tuning.live_event.aggregate_interval, "root pass too slow")
+    require_that(plan.root_pass_seconds <= plan.root_lease * safety, "root pass outlives half its lease")
+    require_that(plan.staleness_worst <= tuning.live_event.max_staleness, `worst staleness {plan.staleness_worst} s`)
     require_that(plan.http_per_server_minute <= tuning.http.shares.live_event, "HTTP share per server")
 
     return problems

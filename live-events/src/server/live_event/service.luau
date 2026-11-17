@@ -39,6 +39,8 @@ type Event = {
     floor: types.Tally,
     polled_at: number,
     passed_at: number,
+    rooted_at: number,
+    rooting: boolean,
     archived: types.Snapshot?,
     archived_at: number,
     reward_coins: number?,
@@ -365,26 +367,46 @@ local function aggregate()
         end
 
         local root_role = aggregator.root_role()
-        if aggregator.candidate(server_id, root_role, population, root_wanted) and hold(event_id, root_role, ttl) then
-            local snapshot, why = aggregator.root_pass(
-                ports,
-                event.spec,
-                layout,
-                event.root,
-                now(),
-                CONFIG.total_heartbeat,
-                CONFIG.orphan_after,
-                CONFIG.max_orphans
-            )
-            if why then
-                trace("live", `{event_id} root pass: {why}`)
-            end
+        local per_group = math.min(event.spec.shards, layout.shards_per_group)
+        local root_every = math.max(interval, planner.root_interval(groups, per_group))
+        if event.rooting or at - event.rooted_at < root_every - CONFIG.aggregate_interval / 2 then
+            continue
+        end
 
-            apply(event, snapshot)
-            if snapshot and at - event.archived_at >= CONFIG.archive_interval then
-                event.archived_at = at
-                task.spawn(archive_store.write, event_id, event.spec.kind, snapshot)
-            end
+        if
+            aggregator.candidate(server_id, root_role, population, root_wanted)
+            and hold(event_id, root_role, math.max(ttl, planner.root_lease(root_every)))
+        then
+            event.rooted_at = at
+            event.rooting = true
+            task.spawn(function()
+                local ok, snapshot, why = pcall(
+                    aggregator.root_pass,
+                    ports,
+                    event.spec,
+                    layout,
+                    event.root,
+                    now(),
+                    CONFIG.total_heartbeat,
+                    CONFIG.orphan_after,
+                    CONFIG.max_orphans
+                )
+                event.rooting = false
+                if not ok then
+                    warn(`[live] {snapshot}`)
+                    return
+                end
+
+                if why then
+                    trace("live", `{event_id} root pass: {why}`)
+                end
+
+                apply(event, snapshot)
+                if snapshot and now() - event.archived_at >= CONFIG.archive_interval then
+                    event.archived_at = now()
+                    task.spawn(archive_store.write, event_id, event.spec.kind, snapshot)
+                end
+            end)
         else
             event.root = { previous = nil, cursor = 0 }
         end
@@ -478,6 +500,8 @@ function live.start()
             floor = {},
             polled_at = 0,
             passed_at = 0,
+            rooted_at = 0,
+            rooting = false,
             archived = nil,
             archived_at = 0,
             reward_coins = definition.reward_coins,

@@ -60,7 +60,7 @@ crashes, lost messages and retries, at the largest Roblox peaks (25.8M CCU, abou
   arrive still leaves a half-done trade. The shared session works wherever they are.
 - **One coordinator hash map.** At 25.8M CCU, presence and sessions need about 38M RU per minute;
   at the ~20 partitions × ~30,000 RU per minute measured and estimated for one map, it would throttle.
-  256 maps carry about 147,000 RU per minute each.
+  1,024 maps carry about 37,000 RU per minute each (108,000 at 76M).
 - **A time-limited "seen" list for gifts.** A sender who crashed after delivering and came back after
   the time limit would be credited twice. The sequence needs no time limit.
 - **A separate escrow key per gift.** Two more writes per gift and its own recovery. The outbox in the
@@ -71,7 +71,7 @@ crashes, lost messages and retries, at the largest Roblox peaks (25.8M CCU, abou
 - **Cost.** About 121 RU per cross-server trade (1 create, ~15 `UpdateAsync`, ~90 polls over 1.5
   minutes) plus presence (3 RU per join, 1 RU per online player every 10 minutes). At a 25.8M
   CCU peak, with 1% of players starting a cross-server trade every minute: 1.2% of the
-  RU quota, 147,000 RU per minute on the busiest map, 4.1M MessagingService deliveries per minute
+  RU quota, 37,000 RU per minute on the busiest map, 4.1M MessagingService deliveries per minute
   against a limit of 646M (`trade_capacity.spec`).
 - **Measured in Studio** on the real MemoryStore, MessagingService and DataStore: 10 of 10
   cross-server trades committed, settlement p50 4.67 s (1.7 s more than on one server), hints
@@ -81,12 +81,13 @@ crashes, lost messages and retries, at the largest Roblox peaks (25.8M CCU, abou
   (p50 2.25 s), 20 gifts (p50 1.32 s), and `StressTest` (6 trades at once, one item in two trades,
   4 cross-server trades with 3 servers racing for one lock, 12 gifts each sent twice) conserved
   every item and coin.
-- **Ceiling.** At the same load the design fits up to 52.6M CCU with 4 or 8 players per server
-  (`trade_capacity.spec` searches it). The first limit is the busiest of the 256 coordinator maps
-  reaching 300,000 RU/min (half of 20 partitions × 30,000). At 5% of players per minute the ceiling
-  is 12.2M. `coordinator_maps` moves it linearly (1,024 maps: ~210M), but every server must use the
-  same count, since a key's map is its hash modulo the count: change it with a migration to the
-  latest version, not a rolling update.
+- **Ceiling.** At the same load the design fits up to 210M CCU with 4 or 8 players per server
+  (`trade_capacity.spec` searches it), so 76M uses 108,000 RU/min on the busiest map. The first
+  limit is the busiest of the 1,024 coordinator maps reaching 300,000 RU/min (half of 20 partitions
+  × 30,000); with the earlier 256 maps it was 52.6M. At 5% of players per minute the ceiling is
+  ~49M. Maps cost nothing until used, and 5 cross-server trades on the real services committed with
+  1,024 (settlement p50 4.28 s). Every server must use the same count, since a key's map is its
+  hash modulo the count: change it with a migration to the latest version, not a rolling update.
 - **Clock.** The countdown uses wall clock (`DateTime.now()`) compared across servers. A few seconds
   of skew only shifts when the lock happens.
 - **ProfileStore's message queue holds 1,000 messages.** Beyond that it drops the oldest

@@ -1,6 +1,7 @@
 export type Config = {
   port: number;
   redisUrl: string;
+  redisClusterNodes: string[];
   serverToken: string;
   adminToken: string;
   closeGraceSeconds: number;
@@ -8,6 +9,8 @@ export type Config = {
   maxOptionsPerEvent: number;
   batchMs: number;
   batchMax: number;
+  shards: number;
+  totalsRefreshMs: number;
 };
 
 function required(name: string): string {
@@ -37,6 +40,7 @@ export function loadConfig(): Config {
   return {
     port: integer("PORT", 8080),
     redisUrl: required("REDIS_URL"),
+    redisClusterNodes: (process.env.REDIS_CLUSTER_NODES ?? "").split(",").filter((node) => node !== ""),
     serverToken: required("EVENTS_SERVER_TOKEN"),
     adminToken: required("EVENTS_ADMIN_TOKEN"),
     closeGraceSeconds: integer("EVENTS_CLOSE_GRACE_SECONDS", 60),
@@ -44,5 +48,7 @@ export function loadConfig(): Config {
     maxOptionsPerEvent: integer("EVENTS_MAX_OPTIONS_PER_EVENT", 32),
     batchMs: integer("EVENTS_BATCH_MS", 25, 0),
     batchMax: integer("EVENTS_BATCH_MAX", 1000),
+    shards: integer("EVENTS_SHARDS", 16),
+    totalsRefreshMs: integer("EVENTS_TOTALS_REFRESH_MS", 1000, 0),
   };
 }

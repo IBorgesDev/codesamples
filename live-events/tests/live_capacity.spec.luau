@@ -53,9 +53,33 @@ return function()
             events = 2,
             options = 3,
         },
+        {
+            name = "25.8M CCU at 4 per server",
+            ccu = 25_836_222,
+            players_per_server = 4,
+            churn = 1.5,
+            events = 2,
+            options = 3,
+        },
+        {
+            name = "76M CCU, 8 per server",
+            ccu = 76_000_000,
+            players_per_server = 8,
+            churn = 1.5,
+            events = 2,
+            options = 3,
+        },
+        {
+            name = "76M CCU at 4 per server",
+            ccu = 76_000_000,
+            players_per_server = 4,
+            churn = 1.5,
+            events = 2,
+            options = 3,
+        },
     }
     const MEGABYTE = 1024 * 1024
-    const CEILING_FLOORS = { [4] = 7_564_537, [8] = 25_836_222, [20] = 25_836_222 }
+    const CEILING_FLOORS = { [4] = 76_000_000, [8] = 76_000_000, [20] = 76_000_000 }
     const CEILING_STEP = 10_000
     const CEILING_MAX = 1_000_000_000
 
@@ -79,7 +103,10 @@ return function()
                             plan.shard_bytes
                         )} bytes | `
                         .. `memory {round(plan.memory_bytes / MEGABYTE)} of {round(plan.memory_quota / MEGABYTE)} MB | `
-                        .. `root pass {round(plan.root_pass_seconds, 2)} s | stale {round(plan.staleness_typical, 1)} s typical, `
+                        .. `root pass {round(plan.root_pass_seconds, 2)} s every {plan.root_interval} s | stale {round(
+                            plan.staleness_typical,
+                            1
+                        )} s typical, `
                         .. `{round(plan.staleness_worst, 1)} s worst, {round(plan.staleness_outage, 1)} s without MessagingService | `
                         .. `HTTP path {round(plan.http_service_rps)} req/s`
                 )
@@ -154,6 +181,18 @@ return function()
             print(`[capacity] pass interval: {round(tiny, 1)} s at 1 CCU, {round(busy, 1)} s at 100k CCU`)
             expect(tiny >= busy).to.equal(true)
             expect(busy).to.equal(tuning.live_event.aggregate_interval)
+        end)
+
+        it("spaces the root pass by how long it takes and keeps it inside half its lease", function()
+            local step = tuning.live_event.aggregate_interval
+            expect(planner.root_interval(1, 1)).to.equal(step)
+            for _, groups in { 1, 505, 1010, 2969, 10_000 } do
+                local seconds = planner.root_pass_seconds(groups, tuning.live_event.shards_per_group)
+                local interval = planner.root_interval(groups, tuning.live_event.shards_per_group)
+                expect(interval >= seconds).to.equal(true)
+                expect(interval % step).to.equal(0)
+                expect(seconds <= planner.root_lease(interval) * tuning.platform.safety).to.equal(true)
+            end
         end)
 
         it("replicas and polling grow with the server count and stay inside the read limit", function()

@@ -3,7 +3,7 @@ import { Redis } from "ioredis";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { buildApp } from "../src/app.js";
 import type { Config } from "../src/config.js";
-import { EventStore } from "../src/store.js";
+import { EventStore, shardKeys } from "../src/store.js";
 
 function redisUrl(): string {
   if (process.env.REDIS_TEST_URL) {
@@ -35,10 +35,13 @@ const config: Config = {
   maxOptionsPerEvent: 32,
   batchMs: 0,
   batchMax: 1000,
+  shards: 8,
+  totalsRefreshMs: 0,
+  redisClusterNodes: [],
 };
 
 let clock = 1_000;
-const store = new EventStore(redis, config.closeGraceSeconds);
+const store = new EventStore(redis, { closeGraceSeconds: config.closeGraceSeconds, shards: config.shards, refreshMs: 0 });
 const app = buildApp({ store, redis, config, now: () => clock });
 
 const SERVER = { authorization: "Bearer server-token" };
@@ -216,6 +219,49 @@ describe.skipIf(!reachable)("events service", () => {
     const totals = (await batched.inject({ method: "GET", url: "/v1/events/fishing", headers: SERVER })).json();
     expect(totals.totals.fish).toBe(50 * 13);
     await batched.close();
+  });
+
+  it("spreads one event over its shards by server and still sums exactly", async () => {
+    await create("fishing", { options: ["fish"] });
+    for (let s = 0; s < 64; s++) {
+      await publish(`server-${s}`, { fishing: { plus: { fish: s + 1 } } });
+    }
+
+    const used = await Promise.all(Array.from({ length: config.shards }, (_, shard) => redis.hlen(shardKeys("fishing", shard)[0] as string)));
+    const snapshot = (await app.inject({ method: "GET", url: "/v1/events/fishing", headers: SERVER })).json();
+    expect(used.filter((entries) => entries > 0).length).toBe(config.shards);
+    expect(used.reduce((sum, entries) => sum + entries, 0)).toBe(64);
+    expect(snapshot.totals.fish).toBe((64 * 65) / 2);
+    expect(snapshot.servers).toBe(64);
+  });
+
+  it("stays exact across instances whose cached shard totals are old", async () => {
+    let wall = 0;
+    const slow = new EventStore(redis, { closeGraceSeconds: 60, shards: config.shards, refreshMs: 60_000, clock: () => wall });
+    await create("fishing", { options: ["fish"] });
+    const first = await slow.publish("s1", { fishing: { plus: { fish: 5 }, minus: {} } }, clock);
+    await publish("s2", { fishing: { plus: { fish: 7 } } });
+    await publish("s3", { fishing: { plus: { fish: 9 } } });
+    wall = 61_000;
+    const later = await slow.publish("s1", { fishing: { plus: { fish: 6 }, minus: {} } }, clock);
+    expect(first.fishing?.totals.fish).toBe(5);
+    expect(later.fishing?.totals.fish).toBe(22);
+    expect((await slow.read("fishing", clock))?.totals.fish).toBe(22);
+  });
+
+  it("keeps the shard count an event was created with, so changing it never counts a server twice", async () => {
+    const wider = new EventStore(redis, { closeGraceSeconds: 60, shards: 32, refreshMs: 0 });
+    await create("fishing", { options: ["fish"] });
+    for (let s = 0; s < 20; s++) {
+      await publish(`server-${s}`, { fishing: { plus: { fish: 10 } } });
+    }
+
+    for (let s = 0; s < 20; s++) {
+      await wider.publish(`server-${s}`, { fishing: { plus: { fish: 11 }, minus: {} } }, clock);
+    }
+
+    expect((await wider.read("fishing", clock))?.totals.fish).toBe(220);
+    expect((await store.read("fishing", clock))?.totals.fish).toBe(220);
   });
 
   it("counts only servers seen in the last 30 seconds as active", async () => {

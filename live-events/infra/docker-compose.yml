@@ -30,6 +30,8 @@ services:
     environment:
       PORT: 8080
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      REDIS_CLUSTER_NODES: ${REDIS_CLUSTER_NODES:-}
+      EVENTS_SHARDS: ${EVENTS_SHARDS:-16}
       EVENTS_SERVER_TOKEN: ${EVENTS_SERVER_TOKEN:?run mise run up to generate infra/.env}
       EVENTS_ADMIN_TOKEN: ${EVENTS_ADMIN_TOKEN:?run mise run up to generate infra/.env}
     ports:

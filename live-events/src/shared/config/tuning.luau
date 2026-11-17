@@ -35,6 +35,7 @@ tuning.live_event = table.freeze({
     poll_interval = 6,
     lease_seconds = 10,
     lease_passes = 2.5,
+    max_staleness = 30,
     backoff_base = 2,
     backoff_cap = 60,
     max_replicas = 1024,

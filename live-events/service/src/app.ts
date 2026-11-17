@@ -1,10 +1,9 @@
 import { timingSafeEqual } from "node:crypto";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
-import type { Redis } from "ioredis";
 import type { Config } from "./config.js";
 import { ignoredOptions, publishedEvents, registry, requestSeconds } from "./metrics.js";
 import type { Coalescer } from "./coalescer.js";
-import type { Contribution, EventSpec, EventStore, Snapshot } from "./store.js";
+import type { Contribution, EventSpec, EventStore, RedisClient, Snapshot } from "./store.js";
 
 const ID = "^[a-z0-9_-]{1,48}$";
 const OPTION = "^[a-z0-9_]{1,32}$";
@@ -26,7 +25,7 @@ function wire(snapshot: Snapshot) {
 
 type Deps = {
   store: EventStore;
-  redis: Redis;
+  redis: RedisClient;
   config: Config;
   coalescer?: Coalescer;
   now?: () => number;
