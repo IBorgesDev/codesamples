@@ -51,6 +51,13 @@ crashes, lost messages and retries, at the largest Roblox peaks (25.8M CCU, abou
   sender and only credits higher ones; the credit and the removal of the message land in the same
   save. The sender delivers in sequence order per receiver and stops at the first failure for that
   receiver, so a resend after a crash is always recognized.
+- ProfileStore keeps at most `MAX_MESSAGE_QUEUE` messages per profile and silently drops the oldest
+  beyond it, so an offline player gifted by many senders could lose gifts. Before sending, the
+  sender reserves the gift's id in the receiver's inbox ledger (`GiftInbox_v1`, one DataStore key per
+  receiver, `UpdateAsync`), at most 500 reserved per receiver; a full ledger leaves the gift in the
+  outbox for the next try. The receiver releases every reservation its saved data has credited, from
+  `OnAfterSave` and again when its profile loads. ProfileStore's queue is raised to 2,000, so even
+  duplicates from resends can never fill it.
 
 ## Alternatives
 
@@ -90,10 +97,9 @@ crashes, lost messages and retries, at the largest Roblox peaks (25.8M CCU, abou
   hash modulo the count: change it with a migration to the latest version, not a rolling update.
 - **Clock.** The countdown uses wall clock (`DateTime.now()`) compared across servers. A few seconds
   of skew only shifts when the lock happens.
-- **ProfileStore's message queue holds 1,000 messages.** Beyond that it drops the oldest
-  (`MAX_MESSAGE_QUEUE` in ProfileStore 1.0.3). A player offline long enough to receive over 1,000
-  gifts would lose the oldest. Senders are rate-limited and keep at most 32 pending gifts each, but
-  nothing caps one receiver across many senders; production would count a receiver's pending gifts in
-  MemoryStore before sending.
+- **The inbox ledger costs one DataStore write per gift sent and one per receiver save that credited
+  gifts.** A receiver with 500 gifts waiting holds the next ones in their senders' outboxes until it
+  plays again. `trade_gift.spec` sends 30 senders' gifts to an offline player whose queue drops above
+  40: without the ledger it lost 576 messages (1,589 coins), with it none.
 - **The receiver keeps one number per distinct sender, forever.** It grows with the number of people
   who ever gifted that player, not with the number of gifts.

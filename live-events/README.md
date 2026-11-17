@@ -11,10 +11,12 @@ world fishing goal, a vote for the next boss. No contribution is lost or counted
   them and broadcast the total. Nothing is ever listed (listing a hash map costs ~350 RU and ~5 s).
 - On **Redis** (`service/`), one Lua script keeps the maximum per server, for games that prefer
   their own backend.
-- One vote per player across servers (saved in the profile before it counts), goal rewards granted
-  once, and totals archived on DataStore so a MemoryStore reset never shows a lower number.
+- One vote per player, counted exactly once even through crashes (the vote is the player's own
+  entry, saved in the profile and republished until it lands), goal rewards granted once, and totals
+  archived on DataStore so a MemoryStore reset never shows a lower number.
 
-The capacity model in `tests/live_capacity.spec.luau` fits 25.8M CCU in 6% of the MemoryStore quota.
+The capacity model in `tests/live_capacity.spec.luau` fits 76M CCU with every player voting, in 6–12% of
+the MemoryStore quota.
 More in [docs/0003-global-live-events.md](docs/0003-global-live-events.md).
 
 ## Run it
@@ -42,7 +44,7 @@ Attributes on `ServerScriptService`:
 | `LiveEventDemo = true` | The server catches random fish every second and logs the world total every 5 s |
 | `LiveEventBackend = "http"` | Uses the Redis service instead of MemoryStore |
 | `LiveEventDisabled = true` | The live event service does not start |
-| `StressTest = true` | 12 logical servers publish to one event at once on the real MemoryStore and the final total is checked |
+| `StressTest = true` | 12 logical servers publish to one event at once on the real MemoryStore while 24 players vote, change and republish old ballots out of order; the final totals are checked |
 
 ## Layout
 

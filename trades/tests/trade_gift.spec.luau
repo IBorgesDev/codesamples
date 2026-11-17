@@ -2,8 +2,14 @@ return function()
     local server_script_service = game:GetService("ServerScriptService")
     local deep = require(script.Parent.support.deep)
     local gift = require(server_script_service.Server.trade.gift)
+    local inbox = require(server_script_service.Server.trade.inbox)
 
     const SEED = 7
+    const INBOX_SENDERS = 30
+    const INBOX_CAP = 20
+    const QUEUE_LIMIT = 40
+    const INBOX_ROUNDS = 40
+    const INBOX_DRAIN_ROUNDS = 1000
 
     local function data(coins, items)
         return { coins = coins, items = items or {}, escrow = {}, gift_seq = 0, gift_seen = {}, outbox = {} }
@@ -141,6 +147,127 @@ return function()
                 local coins_after, items_after = totals(sender, receivers[2], receivers[3])
                 if coins_after ~= coins_before or items_after ~= items_before or next(sender.outbox) ~= nil then
                     error(`seed {SEED}: conservation broken`)
+                end
+            end
+        end)
+
+        it("reserves a slot in the receiver's inbox once per gift and refuses past the cap", function()
+            local ledger, fits = inbox.reserved({}, "1:1", 2)
+            expect(fits).to.equal(true)
+            local again, still = inbox.reserved(ledger :: any, "1:1", 2)
+            expect(again).to.equal(nil)
+            expect(still).to.equal(true)
+            local two = inbox.reserved(ledger :: any, "3:1", 2)
+            local full, refused = inbox.reserved(two :: any, "4:1", 2)
+            expect(full).to.equal(nil)
+            expect(refused).to.equal(false)
+        end)
+
+        it("settles only the reservations the receiver's saved data has credited", function()
+            local settled = inbox.settled({ ["1:1"] = true, ["1:2"] = true, ["3:1"] = true }, { ["1"] = 1 })
+            expect(settled and settled["1:1"]).to.equal(nil)
+            expect(settled and settled["1:2"]).to.equal(true)
+            expect(settled and settled["3:1"]).to.equal(true)
+            expect(inbox.settled({ ["1:2"] = true }, { ["1"] = 1 })).to.equal(nil)
+        end)
+
+        it("never loses a gift to an offline player whose message queue drops the oldest", function()
+            local random = Random.new(SEED)
+            for _ = 1, 40 do
+                local senders, saved_senders = {}, {}
+                for s = 1, INBOX_SENDERS do
+                    senders[s] = data(1000)
+                    saved_senders[s] = deep.copy(senders[s])
+                end
+
+                local receiver = data(0)
+                local saved_receiver = deep.copy(receiver)
+                local queue, ledger, dropped = {}, {}, 0
+                local coins_before = totals(receiver, table.unpack(senders))
+
+                local function send(_, message)
+                    local after, fits = inbox.reserved(ledger, message.tx_id, INBOX_CAP)
+                    if not fits then
+                        return false
+                    end
+
+                    ledger = after or ledger
+                    if random:NextNumber() < 0.1 then
+                        return false
+                    end
+
+                    table.insert(queue, message)
+                    while #queue > QUEUE_LIMIT do
+                        table.remove(queue, 1)
+                        dropped += 1
+                    end
+
+                    return true
+                end
+
+                local function come_online(crash)
+                    for _, message in queue do
+                        gift.receive(receiver, message)
+                    end
+
+                    if crash then
+                        receiver = deep.copy(saved_receiver)
+                        return
+                    end
+
+                    queue = {}
+                    saved_receiver = deep.copy(receiver)
+                    ledger = inbox.settled(ledger, saved_receiver.gift_seen) or ledger
+                end
+
+                for round = 1, INBOX_ROUNDS do
+                    for s, sender in senders do
+                        if random:NextNumber() < 0.5 then
+                            gift.send(sender, s, 99, random:NextInteger(1, 5), {}, round)
+                        end
+
+                        saved_senders[s] = deep.copy(sender)
+                        gift.deliver(sender, gift.pending(sender), send, always)
+                        if random:NextNumber() < 0.1 then
+                            senders[s] = deep.copy(saved_senders[s])
+                        else
+                            saved_senders[s] = deep.copy(sender)
+                        end
+                    end
+
+                    if random:NextNumber() < 0.15 then
+                        come_online(random:NextNumber() < 0.3)
+                    end
+                end
+
+                local function pending_count()
+                    local pending = 0
+                    for _, sender in senders do
+                        pending += #gift.pending(sender)
+                    end
+
+                    return pending
+                end
+
+                for _ = 1, INBOX_DRAIN_ROUNDS do
+                    for _, sender in senders do
+                        gift.deliver(sender, gift.pending(sender), send, always)
+                    end
+
+                    come_online(false)
+                    if pending_count() == 0 then
+                        break
+                    end
+                end
+
+                local pending = pending_count()
+
+                local coins_after = totals(receiver, table.unpack(senders))
+                if dropped > 0 or pending > 0 or coins_after ~= coins_before or inbox.count(ledger) > 0 then
+                    error(
+                        `seed {SEED}: {dropped} dropped, {pending} pending, coins {coins_before} -> {coins_after}, `
+                            .. `{inbox.count(ledger)} reserved`
+                    )
                 end
             end
         end)

@@ -88,7 +88,13 @@ export type Ports = {
     broadcast: Broadcast,
 }
 
-export type Ballot = { option: string, server: string }
+export type Ballot = {
+    option: string,
+    plus: counter.Tally?,
+    minus: counter.Tally?,
+    server: string?,
+    published: boolean?,
+}
 
 export type PlayerData = {
     coins: number,

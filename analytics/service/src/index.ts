@@ -12,7 +12,6 @@ const catalog = loadCatalog(config.schemaPath);
 const redis = new Redis(config.redisUrl, { enableAutoPipelining: true, maxRetriesPerRequest: 2 });
 const store = new RedisBatchStore(redis, {
   shards: config.streamShards,
-  streamMaxLen: config.streamMaxLen,
   dedupeTtlSeconds: config.dedupeTtlSeconds,
 });
 const stats = new ClickHouseStats(new ClickHouse(config.clickhouse));

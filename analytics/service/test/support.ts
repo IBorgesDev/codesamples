@@ -32,7 +32,6 @@ export const config: IngestConfig = {
   readToken: "read-token",
   schemaPath: "",
   streamShards: 4,
-  streamMaxLen: 2_000,
   maxBacklog: 1_000,
   dedupeTtlSeconds: 3_600,
   retryAfterSeconds: 5,

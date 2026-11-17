@@ -15,126 +15,135 @@ return function()
     end
 
     describe("live event ballots", function()
-        it("decides cast, change, same and foreign", function()
-            expect(ballot.decide(nil, "kraken", "s1")).to.equal("cast")
-            expect(ballot.decide({ option = "kraken", server = "s1" }, "kraken", "s1")).to.equal("same")
-            expect(ballot.decide({ option = "kraken", server = "s1" }, "megalodon", "s1")).to.equal("change")
-            expect(ballot.decide({ option = "kraken", server = "s1" }, "megalodon", "s2")).to.equal("foreign")
+        it("decides cast, change and same, and locks a ballot counted the old way", function()
+            local cast = ballot.next(nil, "kraken")
+            expect(ballot.decide(nil, "kraken")).to.equal("cast")
+            expect(ballot.decide(cast, "kraken")).to.equal("same")
+            expect(ballot.decide(cast, "megalodon")).to.equal("change")
+            expect(ballot.decide({ option = "kraken", server = "s1" }, "megalodon")).to.equal("locked")
         end)
 
-        it("a change on the same server moves the vote inside one entry", function()
-            local entry = counter.entry()
-            ballot.count(entry, nil, "kraken")
-            ballot.count(entry, { option = "kraken", server = "s1" }, "megalodon")
-            local value = counter.value(entry)
+        it("a change moves the vote inside the player's own entry", function()
+            local changed = ballot.next(ballot.next(nil, "kraken"), "megalodon")
+            local value = counter.value(ballot.entry(changed))
             expect(value.kraken).to.equal(0)
             expect(value.megalodon).to.equal(1)
+            expect(ballot.same(changed, ballot.next(ballot.next(nil, "kraken"), "megalodon"))).to.equal(true)
         end)
 
-        it("never counts a player twice across saves that fail, flushes that never land and crashes", function()
+        it("counts every saved ballot exactly once across failed saves, lost publishes, crashes and moves", function()
             local random = Random.new(SEED)
-            local saved = {}
-            local memory = {}
-            for player = 1, PLAYERS do
-                saved[player] = profile()
-            end
-
-            local published: { [string]: { entry: any, by: { [number]: number } } } = {}
+            local saved, memory, home = {}, {}, {}
+            local stored: { [string]: any } = {}
             local servers = {}
             local next_server = 0
 
             local function new_server()
                 next_server += 1
-                local server = { id = `s{next_server}`, entry = counter.entry(), by = {}, players = {} }
+                local server = { id = next_server, pending = {} }
                 table.insert(servers, server)
                 return server
             end
 
             local function join(player, server)
                 memory[player] = deep.copy(saved[player])
-                server.players[player] = true
+                home[player] = server
+                local cast = memory[player].live_votes.boss
+                if cast and cast.plus ~= nil and cast.published ~= true then
+                    server.pending[player] = cast
+                end
+            end
+
+            local function flush(server, success)
+                for player, cast in server.pending do
+                    if random:NextNumber() < success then
+                        local key = counter.voter_key(player)
+                        local entry = ballot.entry(cast)
+                        stored[key] = if stored[key] then counter.merge(stored[key], entry) else entry
+                        server.pending[player] = nil
+                        local current = memory[player].live_votes.boss
+                        if home[player] == server and ballot.same(current, cast) then
+                            current.published = true
+                        end
+                    end
+                end
+            end
+
+            local function crash(server)
+                table.remove(servers, table.find(servers, server))
+                local replacement = new_server()
+                for player = 1, PLAYERS do
+                    if home[player] == server then
+                        join(player, replacement)
+                    end
+                end
             end
 
             for player = 1, PLAYERS do
+                saved[player] = profile()
                 join(player, new_server())
-            end
-
-            local function home(player)
-                for _, server in servers do
-                    if server.players[player] then
-                        return server
-                    end
-                end
-
-                return nil
             end
 
             for _ = 1, ROUNDS do
                 local roll = random:NextNumber()
                 local player = random:NextInteger(1, PLAYERS)
-                local server = home(player)
-                if roll < 0.55 and server then
+                local server = home[player]
+                if roll < 0.45 then
                     local option = OPTIONS[random:NextInteger(1, #OPTIONS)]
                     local data = memory[player]
                     local previous = data.live_votes.boss
-                    local decision = ballot.decide(previous, option, server.id)
+                    local decision = ballot.decide(previous, option)
                     if decision == "cast" or decision == "change" then
-                        data.live_votes.boss = { option = option, server = server.id }
-                        if random:NextNumber() < 0.8 then
+                        local cast = ballot.next(previous, option)
+                        data.live_votes.boss = cast
+                        local outcome = random:NextNumber()
+                        if outcome < 0.7 then
                             saved[player] = deep.copy(data)
-                            ballot.count(server.entry, previous, option)
-                            server.by[player] = (server.by[player] or 0) + (if previous then 0 else 1)
+                            server.pending[player] = cast
                         else
+                            if outcome < 0.85 then
+                                saved[player] = deep.copy(data)
+                            end
+
                             data.live_votes.boss = previous
                         end
                     end
-                elseif roll < 0.8 and server then
-                    published[server.id] = { entry = counter.copy(server.entry), by = table.clone(server.by) }
-                elseif roll < 0.9 and server then
-                    for moved in server.players do
-                        server.players[moved] = nil
-                        join(moved, new_server())
-                    end
-
-                    table.remove(servers, table.find(servers, server))
-                elseif server then
-                    server.players[player] = nil
-                    join(player, servers[random:NextInteger(1, #servers)] or new_server())
+                elseif roll < 0.65 then
+                    flush(server, 0.7)
+                elseif roll < 0.75 then
+                    saved[player] = deep.copy(memory[player])
+                elseif roll < 0.85 then
+                    crash(server)
+                else
+                    saved[player] = deep.copy(memory[player])
+                    server.pending[player] = nil
+                    join(player, servers[random:NextInteger(1, #servers)])
                 end
             end
 
-            local totals = {}
-            local per_player: { [number]: number } = {}
-            for _, snapshot in published do
-                counter.sum(totals, counter.value(snapshot.entry))
-                for player, count in snapshot.by do
-                    per_player[player] = (per_player[player] or 0) + count
-                end
-            end
-
-            local votes = 0
-            for _, option in OPTIONS do
-                local value = totals[option] or 0
-                if value < 0 then
-                    error(`seed {SEED}: {option} went negative`)
-                end
-
-                votes += value
-            end
-
-            local voters = 0
             for player = 1, PLAYERS do
-                if saved[player].live_votes.boss then
-                    voters += 1
-                end
+                join(player, home[player])
+            end
 
-                if (per_player[player] or 0) > 1 then
-                    error(`seed {SEED}: player {player} counted {per_player[player]} times`)
+            for _, server in servers do
+                flush(server, 1)
+            end
+
+            local expected: { [string]: number } = {}
+            for player = 1, PLAYERS do
+                local cast = saved[player].live_votes.boss
+                if cast then
+                    expected[cast.option] = (expected[cast.option] or 0) + 1
                 end
             end
 
-            if votes > voters then
-                error(`seed {SEED}: {votes} votes for {voters} voters`)
+            local totals = counter.totals({ stored }, nil)
+            for _, option in OPTIONS do
+                if (totals[option] or 0) ~= (expected[option] or 0) then
+                    error(
+                        `seed {SEED}: {option} counted {totals[option] or 0}, saved ballots say {expected[option] or 0}`
+                    )
+                end
             end
         end)
     end)

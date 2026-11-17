@@ -12,6 +12,8 @@ local types = require(script.Parent.Parent.trade.types)
 
 const CONFIG = tuning.profiles
 
+profile_store.SetConstant("MAX_MESSAGE_QUEUE", CONFIG.message_queue)
+
 export type Loaded = {
     user_id: number,
     profile: any,

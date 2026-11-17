@@ -6,6 +6,7 @@ local tuning = require(replicated_storage.Shared.config.tuning)
 
 const SECONDS_PER_MINUTE = 60
 const ENTRY_BASE_BYTES = 67
+const VOTER_BASE_BYTES = 40
 const OPTION_BYTES = 24
 const PARTIAL_BASE_BYTES = 64
 const SNAPSHOT_BASE_BYTES = 160
@@ -19,6 +20,7 @@ export type Scenario = {
     churn: number,
     events: number,
     options: number,
+    voter_share: number?,
 }
 
 export type Plan = {
@@ -87,8 +89,16 @@ function planner.max_contenders(): number
     return math.max(1, math.floor(store.write_per_key * tuning.platform.safety / (passes * UPDATE_RU)))
 end
 
-function planner.shards(servers: number): number
-    return math.max(1, math.ceil(servers / tuning.live_event.servers_per_shard))
+function planner.shards(servers: number, lifetime: number?, voters: number?, options: number?): number
+    local config = tuning.live_event
+    local store = tuning.platform.memory_store
+    local option_bytes = OPTION_BYTES * (options or 1)
+    local bytes = (lifetime or servers) * (ENTRY_BASE_BYTES + option_bytes)
+        + (voters or 0) * (VOTER_BASE_BYTES + 2 * option_bytes)
+    local by_writes = math.ceil(servers / config.servers_per_shard)
+    local by_bytes = math.ceil(bytes / (store.value_bytes * tuning.platform.safety * config.shard_fill))
+
+    return math.max(1, by_writes, by_bytes)
 end
 
 function planner.replicas(servers: number, max_replicas: number): number
@@ -149,23 +159,27 @@ function planner.plan(scenario: Scenario, overrides: { shards: number? }?): Plan
 
     local servers = math.ceil(scenario.ccu / scenario.players_per_server)
     local lifetime = math.ceil(servers * scenario.churn)
+    local voters = scenario.ccu * (scenario.voter_share or 0)
+    local votes_per_minute = voters / config.vote_minutes
     local flushes = per_minute(config.flush_interval + config.flush_jitter / 2)
     local passes = per_minute(config.aggregate_interval)
 
-    local shards = chosen.shards or planner.shards(servers)
+    local shards = chosen.shards or planner.shards(servers, lifetime, voters, scenario.options)
     local groups = math.max(1, math.ceil(shards / config.shards_per_group))
     local per_group = math.min(shards, config.shards_per_group)
     local replicas = planner.replicas(servers, config.max_replicas)
     local poll_every = planner.poll_interval(servers, replicas)
 
-    local updates_per_shard = servers / shards * flushes * config.conflict_overhead
+    local updates_per_shard = (servers * flushes * config.conflict_overhead + votes_per_minute) / shards
     local shard_write_ru = updates_per_shard * UPDATE_RU
     local shard_read_ru = shard_write_ru + passes
     local option_bytes = OPTION_BYTES * scenario.options
     local shard_bytes = lifetime / shards * (ENTRY_BASE_BYTES + option_bytes)
+        + voters / shards * (VOTER_BASE_BYTES + 2 * option_bytes)
 
     local breakdown: { [string]: number } = {
         shard_updates = servers * flushes * config.conflict_overhead * UPDATE_RU,
+        voter_updates = votes_per_minute * UPDATE_RU,
         group_reads = shards * passes,
         group_leases = groups * config.group_candidates * passes * UPDATE_RU,
         partial_writes = groups * passes,
@@ -182,11 +196,8 @@ function planner.plan(scenario: Scenario, overrides: { shards: number? }?): Plan
     local outage_polls = servers * per_minute(poll_every)
     local quota = store.ru_base + store.ru_per_ccu * scenario.ccu
     local memory = scenario.events
-        * (
-            shards * shard_bytes
-            + groups * (PARTIAL_BASE_BYTES + option_bytes)
-            + replicas * (SNAPSHOT_BASE_BYTES + option_bytes)
-        )
+            * (lifetime * (ENTRY_BASE_BYTES + option_bytes) + groups * (PARTIAL_BASE_BYTES + option_bytes) + replicas * (SNAPSHOT_BASE_BYTES + option_bytes))
+        + voters * (VOTER_BASE_BYTES + 2 * option_bytes)
 
     local group_calls = 1 + rounds(per_group) + 1
     local root_seconds = planner.root_pass_seconds(groups, per_group)

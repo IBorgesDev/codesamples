@@ -2,9 +2,11 @@
 
 local players = game:GetService("Players")
 local replicated_storage = game:GetService("ReplicatedStorage")
+local run_service = game:GetService("RunService")
 
 local gift = require(script.Parent.gift)
 local guard = require(script.Parent.Parent.net.guard)
+local inbox = require(script.Parent.inbox)
 local net = require(replicated_storage.Shared.net)
 local profiles = require(script.Parent.Parent.data.profiles)
 local trace = require(replicated_storage.Shared.util.trace)
@@ -18,6 +20,10 @@ local gift_service = {}
 
 local delivering: { [number]: boolean } = {}
 local listeners: { (Player, number, number) -> () } = {}
+local inbox_store = inbox.open(
+    if run_service:IsStudio() then CONFIG.inbox_store .. tuning.profiles.studio_suffix else CONFIG.inbox_store,
+    CONFIG.inbox_cap
+)
 
 function gift_service.on_sent(listener: (Player, number, number) -> ())
     table.insert(listeners, listener)
@@ -44,13 +50,19 @@ local function deliver(account: types.Account, send: gift.Send): number
     return gift.deliver(account.data, ids, send, account.active)
 end
 
+function gift_service.reserved(send: gift.Send): gift.Send
+    return function(to, message)
+        return inbox_store.reserve(to, message.tx_id) and send(to, message)
+    end
+end
+
 function gift_service.deliver(account: types.Account, send: gift.Send?): number
     if delivering[account.user_id] then
         return 0
     end
 
     delivering[account.user_id] = true
-    local ok, delivered = pcall(deliver, account, send or profiles.message)
+    local ok, delivered = pcall(deliver, account, send or gift_service.reserved(profiles.message))
     delivering[account.user_id] = nil
 
     if not ok then
@@ -101,13 +113,46 @@ function gift_service.send(player: Player, to: number, coins: number, item_ids: 
     return true
 end
 
+local function covers(saved: { [string]: number }, settled: { [string]: number }): boolean
+    for from, seq in saved do
+        if (settled[from] or 0) < seq then
+            return false
+        end
+    end
+
+    return true
+end
+
 function gift_service.receive(loaded: profiles.Loaded)
+    local settled = table.clone(loaded.account.data.gift_seen)
+    if next(settled) then
+        task.spawn(inbox_store.settle, loaded.user_id, settled)
+    end
+
+    loaded.profile.OnAfterSave:Connect(function(last_saved: types.Data)
+        if not covers(last_saved.gift_seen, settled) then
+            settled = table.clone(last_saved.gift_seen)
+            task.spawn(inbox_store.settle, loaded.user_id, settled)
+        end
+    end)
+
+    local save_queued = false
     loaded.profile:MessageHandler(function(message: any, processed: () -> ())
-        if gift.is_gift(message) and gift.receive(loaded.account.data, message) then
+        local is_gift = gift.is_gift(message)
+        if is_gift and gift.receive(loaded.account.data, message) then
             trace("gift", `{message.tx_id} received by {loaded.user_id}`)
         end
 
         processed()
+        if is_gift and not save_queued then
+            save_queued = true
+            task.delay(CONFIG.inbox_settle_delay, function()
+                save_queued = false
+                if loaded.profile:IsActive() then
+                    loaded.profile:Save()
+                end
+            end)
+        end
     end)
 end
 

@@ -210,6 +210,7 @@ export class EventStore {
     }
 
     const closed = view.endsAt !== null && now >= view.endsAt + this.closeGraceSeconds;
+    const exact = fresh || (!closed && view.state === "live" && view.goal !== null);
     const byShard = new Map<number, Map<string, Contribution>>();
     for (const [server, contribution] of servers) {
       const shard = shardOf(server, view.shards);
@@ -234,7 +235,7 @@ export class EventStore {
         }
 
         const known = cache[shard];
-        if (known && !fresh && at - known.at < this.refreshMs) {
+        if (known && !exact && at - known.at < this.refreshMs) {
           return { ...known, ignored: 0 };
         }
 

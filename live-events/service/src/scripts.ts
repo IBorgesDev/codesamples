@@ -46,7 +46,7 @@ for _ = 1, count do
   local server = ARGV[i]
   local fields = tonumber(ARGV[i + 1])
   i = i + 2
-  if not closed and server ~= '' then
+  if not closed and server ~= '' and string.sub(server, 1, 2) ~= 'v-' then
     redis.call('ZADD', seen, now, server)
   end
 

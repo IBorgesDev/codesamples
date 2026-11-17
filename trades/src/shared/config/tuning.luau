@@ -32,6 +32,9 @@ tuning.trade = table.freeze({
     inventory_interval = 0.5,
     result_display = 6,
     gift_resend_interval = 60,
+    inbox_store = "GiftInbox_v1",
+    inbox_cap = 500,
+    inbox_settle_delay = 2,
     coordinator_maps = 1024,
     lock_grace = 10,
     subscribe_retry = 10,
@@ -42,6 +45,7 @@ tuning.trade = table.freeze({
 tuning.profiles = table.freeze({
     store_name = "Players_v1",
     studio_suffix = "_studio",
+    message_queue = 2000,
     seed_items = 6,
     seed_coins = 500,
 })

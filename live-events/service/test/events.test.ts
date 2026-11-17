@@ -3,7 +3,7 @@ import { Redis } from "ioredis";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { buildApp } from "../src/app.js";
 import type { Config } from "../src/config.js";
-import { EventStore, shardKeys } from "../src/store.js";
+import { EventStore, shardKeys, shardOf } from "../src/store.js";
 
 function redisUrl(): string {
   if (process.env.REDIS_TEST_URL) {
@@ -262,6 +262,37 @@ describe.skipIf(!reachable)("events service", () => {
 
     expect((await wider.read("fishing", clock))?.totals.fish).toBe(220);
     expect((await store.read("fishing", clock))?.totals.fish).toBe(220);
+  });
+
+  it("counts a player's own vote entry in the totals but not as an active server", async () => {
+    await create("boss_vote", { options: ["kraken", "megalodon"] });
+    await publish("server-a", { boss_vote: {} });
+    await publish("v-1001", { boss_vote: { plus: { kraken: 1, megalodon: 1 }, minus: { kraken: 1 } } });
+    const again = await publish("v-1001", { boss_vote: { plus: { kraken: 1, megalodon: 1 }, minus: { kraken: 1 } } });
+    expect(again.events.boss_vote.totals).toEqual({ kraken: 0, megalodon: 1 });
+    expect(again.events.boss_vote.servers).toBe(1);
+  });
+
+  it("marks a goal in the batch that crosses it, even on an instance whose cached shard totals are old", async () => {
+    const names: string[] = [];
+    const used = new Set<number>();
+    for (let n = 0; names.length < 3; n++) {
+      const shard = shardOf(`g${n}`, config.shards);
+      if (!used.has(shard)) {
+        used.add(shard);
+        names.push(`g${n}`);
+      }
+    }
+
+    const slow = new EventStore(redis, { closeGraceSeconds: 60, shards: config.shards, refreshMs: 60_000, clock: () => 0 });
+    await create("fishing", { options: ["fish"], goal: { option: "fish", target: 10 } });
+    await slow.publish(names[0] as string, { fishing: { plus: { fish: 6 }, minus: {} } }, clock);
+    await publish(names[1] as string, { fishing: { plus: { fish: 3 } } });
+    clock = 1_005;
+    const crossing = await slow.publish(names[2] as string, { fishing: { plus: { fish: 1 }, minus: {} } }, clock);
+    expect(crossing.fishing?.totals.fish).toBe(10);
+    expect(crossing.fishing?.state).toBe("completed");
+    expect(crossing.fishing?.completedAt).toBe(1_005);
   });
 
   it("counts only servers seen in the last 30 seconds as active", async () => {

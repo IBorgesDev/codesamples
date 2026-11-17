@@ -61,9 +61,14 @@ receiver's profile remembers the highest gift number it credited per sender.
 - **Exactly once.** Gifts are numbered per sender and delivered in order per receiver, stopping at
   the first failure for that receiver. A resend after a crash carries a number the receiver has
   already credited, so it is dropped.
+- **Never dropped by the receiver's queue.** A gift is sent only after it holds a slot in the
+  receiver's inbox ledger, which caps what waits for one receiver far below ProfileStore's queue
+  size, and slots are freed only once a save holding the credit landed.
 
 `trade_gift.spec.luau` replays 200 random runs of sends, failed and duplicated deliveries, and sender
-crashes back to the last save, and checks conservation and an empty outbox each time.
+crashes back to the last save, and checks conservation and an empty outbox each time. It also runs 40
+rounds of 30 senders gifting one offline player whose queue drops the oldest above 40, with failed
+sends and crashes on both sides, and checks that nothing was dropped and every coin arrived.
 
 ## Proof that the checks can fail
 

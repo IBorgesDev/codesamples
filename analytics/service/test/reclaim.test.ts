@@ -1,7 +1,7 @@
 import type { Redis } from "ioredis";
 import { describe, expect, it } from "vitest";
 import { dedupToken } from "../src/pipeline.js";
-import { deadConsumer, pendingEntries, RedisShardStream } from "../src/stream.js";
+import { compareIds, deadConsumer, pendingEntries, RedisShardStream, trimFloor } from "../src/stream.js";
 
 const KEY = "analytics:events:{0}";
 const IDLE_MS = 60_000;
@@ -101,5 +101,29 @@ describe("reclaiming a dead consumer's entries", () => {
       { id: "1-0", consumer: "worker-a", idleMs: 61_000 },
     ]);
     expect(deadConsumer([{ id: "1-0", consumer: "self", idleMs: 1 }], "self")).toBeNull();
+  });
+});
+
+describe("stream trimming floor", () => {
+  it("orders stream ids by time, then sequence", () => {
+    expect(compareIds("10-2", "10-10")).toBeLessThan(0);
+    expect(compareIds("11-0", "10-99")).toBeGreaterThan(0);
+    expect(compareIds("5-1", "5-1")).toBe(0);
+  });
+
+  it("keeps everything from the oldest pending entry, or after the last delivered one, across groups", () => {
+    expect(trimFloor([{ lastDelivered: "90-0", pending: 3, oldestPending: "40-1" }])).toBe("40-1");
+    expect(trimFloor([{ lastDelivered: "90-0", pending: 0, oldestPending: null }])).toBe("90-0");
+    expect(
+      trimFloor([
+        { lastDelivered: "90-0", pending: 0, oldestPending: null },
+        { lastDelivered: "70-5", pending: 0, oldestPending: null },
+      ]),
+    ).toBe("70-5");
+  });
+
+  it("trims nothing before any group has read anything", () => {
+    expect(trimFloor([{ lastDelivered: "0-0", pending: 0, oldestPending: null }])).toBe(null);
+    expect(trimFloor([])).toBe(null);
   });
 });

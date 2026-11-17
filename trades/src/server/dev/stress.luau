@@ -264,11 +264,14 @@ local function gifts(list: { Loaded }, receiver_key: string)
 
         finals[tostring(sender.user_id)] = data.gift_seq
         table.insert(tasks, function()
-            gift_service.deliver(sender.account, function(_, message)
-                profiles.message_key(receiver_key, message)
-                deliveries += 1
-                return profiles.message_key(receiver_key, message)
-            end)
+            gift_service.deliver(
+                sender.account,
+                gift_service.reserved(function(_, message)
+                    profiles.message_key(receiver_key, message)
+                    deliveries += 1
+                    return profiles.message_key(receiver_key, message)
+                end)
+            )
         end)
     end
 

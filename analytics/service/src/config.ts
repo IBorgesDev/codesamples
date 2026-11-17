@@ -15,7 +15,6 @@ export type IngestConfig = {
   readToken: string;
   schemaPath: string;
   streamShards: number;
-  streamMaxLen: number;
   maxBacklog: number;
   dedupeTtlSeconds: number;
   retryAfterSeconds: number;
@@ -85,7 +84,6 @@ export function loadIngestConfig(): IngestConfig {
     readToken: required("ANALYTICS_READ_TOKEN"),
     schemaPath: text("ANALYTICS_SCHEMA_PATH", DEFAULT_SCHEMA_PATH),
     streamShards: integer("ANALYTICS_STREAM_SHARDS", 4),
-    streamMaxLen: integer("ANALYTICS_STREAM_MAXLEN", 40_000),
     maxBacklog: integer("ANALYTICS_MAX_BACKLOG", 20_000),
     dedupeTtlSeconds: integer("ANALYTICS_DEDUPE_TTL_SECONDS", 3_600),
     retryAfterSeconds: integer("ANALYTICS_RETRY_AFTER_SECONDS", 5),
@@ -94,10 +92,6 @@ export function loadIngestConfig(): IngestConfig {
     statsMaxMinutes: integer("ANALYTICS_STATS_MAX_MINUTES", 1_440),
     clickhouse: clickhouse(),
   };
-
-  if (config.streamMaxLen < 2 * config.maxBacklog) {
-    throw new Error("ANALYTICS_STREAM_MAXLEN must be at least twice ANALYTICS_MAX_BACKLOG, so trimming never reaches unread entries");
-  }
 
   return config;
 }

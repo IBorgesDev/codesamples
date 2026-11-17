@@ -1,7 +1,7 @@
 import type { Redis } from "ioredis";
 import { CONSUMER_GROUP } from "./keys.js";
 import type { ShardEntry, ShardStream } from "./pipeline.js";
-import { entries, isBusyGroup } from "./redis.js";
+import { entries, flatRecord, isBusyGroup } from "./redis.js";
 
 export type PendingEntry = { id: string; consumer: string; idleMs: number };
 
@@ -30,6 +30,26 @@ function streamEntries(reply: unknown): ShardEntry[] {
   }
 
   return entries(reply[0][1]);
+}
+
+export type GroupState = { lastDelivered: string; pending: number; oldestPending: string | null };
+
+export function compareIds(left: string, right: string): number {
+  const [leftMs = 0, leftSeq = 0] = left.split("-").map(Number);
+  const [rightMs = 0, rightSeq = 0] = right.split("-").map(Number);
+  return leftMs === rightMs ? leftSeq - rightSeq : leftMs - rightMs;
+}
+
+export function trimFloor(groups: GroupState[]): string | null {
+  let floor: string | null = null;
+  for (const group of groups) {
+    const needed = group.pending > 0 && group.oldestPending !== null ? group.oldestPending : group.lastDelivered;
+    if (floor === null || compareIds(needed, floor) < 0) {
+      floor = needed;
+    }
+  }
+
+  return floor === null || compareIds(floor, "0-0") <= 0 ? null : floor;
 }
 
 export class RedisShardStream implements ShardStream {
@@ -99,6 +119,28 @@ export class RedisShardStream implements ShardStream {
   async ack(ids: string[]): Promise<void> {
     if (ids.length > 0) {
       await this.redis.call("XACK", this.key, this.group, ...ids);
+      await this.trim().catch(() => undefined);
     }
+  }
+
+  async trim(): Promise<string | null> {
+    const groups: GroupState[] = [];
+    for (const raw of (await this.redis.call("XINFO", "GROUPS", this.key)) as unknown[]) {
+      const fields = flatRecord(raw);
+      const name = String(fields.get("name"));
+      const summary = (await this.redis.call("XPENDING", this.key, name)) as unknown[];
+      groups.push({
+        lastDelivered: String(fields.get("last-delivered-id") ?? "0-0"),
+        pending: Number(summary[0] ?? 0),
+        oldestPending: summary[1] === null || summary[1] === undefined ? null : String(summary[1]),
+      });
+    }
+
+    const floor = trimFloor(groups);
+    if (floor !== null) {
+      await this.redis.call("XTRIM", this.key, "MINID", "~", floor);
+    }
+
+    return floor;
   }
 }

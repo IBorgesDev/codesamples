@@ -6,6 +6,7 @@ local run_service = game:GetService("RunService")
 local server_script_service = game:GetService("ServerScriptService")
 
 local aggregator = require(script.Parent.Parent.live_event.aggregator)
+local ballot = require(script.Parent.Parent.live_event.ballot)
 local counter = require(script.Parent.Parent.live_event.counter)
 local memory_store = require(script.Parent.Parent.live_event.memory_store)
 local trace = require(replicated_storage.Shared.util.trace)
@@ -23,6 +24,10 @@ const MAX_FISH = 5
 const HEARTBEAT = 10
 const ORPHAN_AFTER = 30
 const LIVE_GROUPS = LIVE_SHARDS // 2
+const VOTERS = 24
+const VOTER_BASE_ID = 900_000
+const VOTE_OPTIONS = { "kraken", "megalodon" }
+const STALE_REPUBLISH = 0.3
 
 local function wall_now(): number
     return DateTime.now().UnixTimestampMillis / 1000
@@ -37,8 +42,14 @@ end
 
 local function live_publishers()
     local event_id = `stress_{string.sub(string.gsub(http_service:GenerateGUID(false), "-", ""), 1, 8)}`
-    local spec =
-        { id = event_id, kind = "counter", options = { "fish" }, goal = nil, ends_at = nil, shards = LIVE_SHARDS }
+    local spec = {
+        id = event_id,
+        kind = "counter",
+        options = { "fish", "kraken", "megalodon" },
+        goal = nil,
+        ends_at = nil,
+        shards = LIVE_SHARDS,
+    }
     local layout = {
         shards_per_group = 2,
         max_replicas = 2,
@@ -64,6 +75,26 @@ local function live_publishers()
         })
     end
 
+    local voters = {}
+    for index = 1, VOTERS do
+        voters[index] = { id = VOTER_BASE_ID + index, cast = nil :: ballot.Ballot?, history = {} :: { ballot.Ballot } }
+    end
+
+    local republished = 0
+    local function vote(server: any)
+        local voter = voters[math.random(1, VOTERS)]
+        local cast = ballot.next(voter.cast, VOTE_OPTIONS[math.random(1, #VOTE_OPTIONS)])
+        voter.cast = cast
+        table.insert(voter.history, cast)
+        local key = counter.voter_key(voter.id)
+        aggregator.publish(server.ports, spec :: any, layout, key, ballot.entry(cast))
+        if math.random() < STALE_REPUBLISH then
+            republished += 1
+            local stale = voter.history[math.random(1, #voter.history)]
+            aggregator.publish(server.ports, spec :: any, layout, key, ballot.entry(stale))
+        end
+    end
+
     local leader = memory_store.ports(options :: any)
     local running = true
     local published_total = 0
@@ -85,6 +116,7 @@ local function live_publishers()
             while running do
                 counter.add(server.entry, "fish", math.random(1, MAX_FISH))
                 publish(server)
+                vote(server)
                 task.wait(LIVE_PUBLISH_EVERY)
             end
         end)
@@ -134,10 +166,30 @@ local function live_publishers()
         published_total += server.published
     end
 
+    local expected_votes: { [string]: number } = {}
+    local cast_count = 0
+    for _, voter in voters do
+        if voter.cast then
+            cast_count += 1
+            expected_votes[voter.cast.option] = (expected_votes[voter.cast.option] or 0) + 1
+            aggregator.publish(leader, spec :: any, layout, counter.voter_key(voter.id), ballot.entry(voter.cast))
+        end
+    end
+
     local truth, failures = 0, 0
     for _, server in servers do
         truth += counter.value(server.entry).fish or 0
         failures += server.failures
+    end
+
+    local function votes_match(totals: { [string]: number }): boolean
+        for _, option in VOTE_OPTIONS do
+            if (totals[option] or 0) ~= (expected_votes[option] or 0) then
+                return false
+            end
+        end
+
+        return true
     end
 
     local now = wall_now()
@@ -149,7 +201,7 @@ local function live_publishers()
 
         final =
             aggregator.root_pass(leader, spec :: any, layout, { previous = nil, cursor = 0 }, now, 0, ORPHAN_AFTER, 1)
-        if final and (final.totals.fish or 0) == truth then
+        if final and (final.totals.fish or 0) == truth and votes_match(final.totals) then
             break
         end
 
@@ -167,6 +219,14 @@ local function live_publishers()
             .. `{if final then final.live else "?"} live of {if final then final.servers else "?"} servers, `
             .. `{failures} publish calls throttled or failed and retried, `
             .. `fish not yet in the total during the run p50 {percentile(lags, 0.5)} max {percentile(lags, 1)}`
+    )
+    trace(
+        "stress votes",
+        `{cast_count} players voted through their own entries, changing votes and with {republished} stale ballots `
+            .. `republished out of order: kraken {if final then final.totals.kraken or 0 else "none"} of `
+            .. `{expected_votes.kraken or 0}, megalodon {if final then final.totals.megalodon or 0 else "none"} of `
+            .. `{expected_votes.megalodon or 0} ({if final and votes_match(final.totals) then "exact" else "MISMATCH"}), `
+            .. `{if final then final.servers else "?"} servers counted (voters excluded)`
     )
 end
 

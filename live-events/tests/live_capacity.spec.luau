@@ -28,6 +28,7 @@ return function()
             churn = 1.5,
             events = 2,
             options = 3,
+            voter_share = 1,
         },
         {
             name = "7.56M CCU, Saturday peak of a group of games",
@@ -36,6 +37,7 @@ return function()
             churn = 1.5,
             events = 2,
             options = 3,
+            voter_share = 1,
         },
         {
             name = "14.3M CCU, single-game peak",
@@ -44,6 +46,7 @@ return function()
             churn = 1.5,
             events = 2,
             options = 3,
+            voter_share = 1,
         },
         {
             name = "25.8M CCU, largest single-game peak",
@@ -52,6 +55,7 @@ return function()
             churn = 1.5,
             events = 2,
             options = 3,
+            voter_share = 1,
         },
         {
             name = "25.8M CCU at 4 per server",
@@ -60,6 +64,7 @@ return function()
             churn = 1.5,
             events = 2,
             options = 3,
+            voter_share = 1,
         },
         {
             name = "76M CCU, 8 per server",
@@ -68,6 +73,7 @@ return function()
             churn = 1.5,
             events = 2,
             options = 3,
+            voter_share = 1,
         },
         {
             name = "76M CCU at 4 per server",
@@ -76,6 +82,7 @@ return function()
             churn = 1.5,
             events = 2,
             options = 3,
+            voter_share = 1,
         },
     }
     const MEGABYTE = 1024 * 1024
@@ -127,6 +134,7 @@ return function()
                         churn = 1.5,
                         events = 2,
                         options = 3,
+                        voter_share = 1,
                     })
                 end
 

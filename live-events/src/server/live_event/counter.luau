@@ -12,7 +12,17 @@ export type Shard = { [string]: Entry }
 
 export type Transform = (current: Shard?) -> Shard?
 
+const VOTER_PREFIX = "v-"
+
 local counter = {}
+
+function counter.voter_key(user_id: number): string
+    return `{VOTER_PREFIX}{user_id}`
+end
+
+function counter.is_voter(key: string): boolean
+    return string.sub(key, 1, #VOTER_PREFIX) == VOTER_PREFIX
+end
 
 function counter.entry(): Entry
     return { plus = {}, minus = {} }
@@ -99,10 +109,12 @@ function counter.totals(shards: { [any]: Shard }, since: number?): (Tally, numbe
     local servers = 0
     local live = 0
     for _, shard in shards do
-        for _, entry in shard do
-            servers += 1
-            if since == nil or (entry.seen or 0) >= since then
-                live += 1
+        for key, entry in shard do
+            if not counter.is_voter(key) then
+                servers += 1
+                if since == nil or (entry.seen or 0) >= since then
+                    live += 1
+                end
             end
 
             counter.sum(totals, counter.value(entry))

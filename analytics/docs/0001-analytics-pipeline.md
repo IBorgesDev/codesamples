@@ -40,8 +40,10 @@ can never leave a batch marked as seen without being stored. Streams are sharded
 each dedupe key in its stream's hash slot so the script stays valid on Redis Cluster. A duplicate
 answers with the original counts. Events more than a day old or 5 minutes in the future are
 rejected, so one insert never touches many day partitions. When consumer lag plus pending entries
-pass 20,000, ingest answers 503 with `Retry-After` and the game backs off; streams are trimmed at
-twice that, so trimming only ever removes acknowledged entries (checked at startup).
+pass 20,000, ingest answers 503 with `Retry-After` and the game backs off. Appends never trim:
+after each acknowledgement the worker trims the stream up to the oldest entry any consumer group
+still needs (its oldest pending entry, or its last delivered one), with `XTRIM MINID ~`, which only
+drops whole nodes below that id, so trimming can never remove a pending or unread entry.
 
 **Worker**: reads the streams in a consumer group, inserts into ClickHouse with a deduplication token
 built from the stream key and entry ids, and acknowledges only after the insert. On restart a worker
@@ -69,6 +71,9 @@ such.
   idempotency key per batch is the simpler exactly-once.
 - **Kafka.** More throughput headroom, much more to run. Redis Streams with consumer groups give the
   same at-least-once delivery and replay at this repo's scale, and the shard key lets it grow.
+- **Trimming on append (`XADD MAXLEN ~`).** One command instead of a trim after each
+  acknowledgement, but the approximate trim can overshoot into entries a dead consumer still holds,
+  and the reclaimed group would then get a new token.
 - **Roblox's built-in AnalyticsService.** No raw access and no custom queries, so it cannot feed this
   dashboard.
 
@@ -82,10 +87,11 @@ such.
   hour and the game stops retrying a batch after 50 minutes.
 - **Loss is bounded and visible**: a server crash loses at most one flush interval plus whatever was
   waiting while the service was down, and buffer drops are reported in the next batch.
-- **The one case the token cannot cover**: if stream trimming ever removed an entry that a dead
-  consumer still had pending, the reclaimed group would be smaller and its token new. Backpressure
-  stops appends at 20,000 unacknowledged entries and streams trim at 40,000, so this needs the
-  approximate trim to overshoot by half.
+- **Trimming follows acknowledgements**, so a dead consumer's pending entries stay until another
+  worker reclaims them and inserts them with the same token. `integration.test.ts` checks that a
+  trim never removes a pending or unread entry; after a load run the streams drop back to about one
+  entry once the worker drains, the row count still matches the accepted events exactly, and an
+  alternating comparison with the append-time trim on the same VM gave equal or lower p95 and p99.
 - **`user_id` must be non-negative** (a `UInt64` column). Studio's local test players have negative
   ids, so their events are rejected in local server tests; real accounts are fine.
 - **`clickhouse/init.sql` runs only on an empty volume.** An existing `clickhouse-data` volume

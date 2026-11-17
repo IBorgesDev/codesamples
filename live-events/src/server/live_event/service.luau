@@ -27,9 +27,15 @@ const CONFIG = tuning.live_event
 const BACKEND_ATTRIBUTE = "LiveEventBackend"
 const DISABLED_ATTRIBUTE = "LiveEventDisabled"
 
+type Vote = {
+    user_id: number,
+    cast: ballot.Ballot,
+}
+
 type Event = {
     spec: types.Spec,
     entry: types.Entry,
+    votes: { [string]: Vote },
     sent: types.Entry,
     sent_at: number,
     snapshot: types.Snapshot?,
@@ -125,6 +131,10 @@ function live.display(event_id: string): types.Snapshot?
         totals[option] = (totals[option] or 0) + value - (already[option] or 0)
     end
 
+    for _, vote in event.votes do
+        counter.sum(totals, counter.value(ballot.entry(vote.cast)))
+    end
+
     if event.spec.kind == "counter" then
         for option, value in totals do
             local floor = math.max(event.floor[option] or 0, value)
@@ -163,7 +173,7 @@ local function push_mine(player: Player)
     local data = loaded.account.data
     local votes = {}
     for event_id, cast in data.live_votes do
-        votes[event_id] = { option = cast.option, here = cast.server == server_id }
+        votes[event_id] = { option = cast.option, here = cast.plus ~= nil or cast.server == server_id }
     end
 
     local rewards = {}
@@ -196,20 +206,20 @@ function live.vote(player: Player, event_id: string, option: string): boolean
 
     local data = loaded.account.data
     local previous = data.live_votes[event_id]
-    local decision = ballot.decide(previous, option, server_id)
+    local decision = ballot.decide(previous, option)
     if decision == "same" then
         return true
     end
 
-    if decision == "foreign" then
+    if decision == "locked" then
         return false
     end
 
     voting[player] = true
-    data.live_votes[event_id] = { option = option, server = server_id }
+    local cast = ballot.next(previous, option)
+    data.live_votes[event_id] = cast
     local landed = loaded.account.persist(function(saved)
-        local stored = saved.live_votes[event_id]
-        return stored ~= nil and stored.option == option and stored.server == server_id
+        return ballot.same(saved.live_votes[event_id], cast)
     end)
     voting[player] = nil
 
@@ -218,7 +228,7 @@ function live.vote(player: Player, event_id: string, option: string): boolean
         return false
     end
 
-    ballot.count(event.entry, previous, option)
+    event.votes[counter.voter_key(player.UserId)] = { user_id = player.UserId, cast = cast }
     event.dirty = true
     notify("vote", player, event_id, option, 1)
     push_mine(player)
@@ -262,6 +272,30 @@ local function due(event: Event, at: number): boolean
     return not counter.dominates(event.sent, event.entry) or at - event.sent_at >= CONFIG.heartbeat
 end
 
+local function mark_published(event_id: string, vote: Vote)
+    local player = players:GetPlayerByUserId(vote.user_id)
+    local loaded = if player then profiles.get(player) else nil
+    local stored = if loaded then loaded.account.data.live_votes[event_id] else nil
+    if stored and ballot.same(stored, vote.cast) then
+        stored.published = true
+    end
+end
+
+local function queue_unpublished(player: Player)
+    local loaded = profiles.get(player)
+    if loaded == nil then
+        return
+    end
+
+    for event_id, cast in loaded.account.data.live_votes do
+        local event = events[event_id]
+        if event and cast.plus ~= nil and cast.published ~= true then
+            event.votes[counter.voter_key(player.UserId)] = { user_id = player.UserId, cast = cast }
+            event.dirty = true
+        end
+    end
+end
+
 local function flush_memory_store(at: number)
     for event_id, event in events do
         if due(event, at) then
@@ -270,6 +304,16 @@ local function flush_memory_store(at: number)
             if aggregator.publish(ports, event.spec, layout, server_id, entry) then
                 event.sent = entry
                 event.sent_at = at
+            end
+        end
+
+        for key, vote in event.votes do
+            if aggregator.publish(ports, event.spec, layout, key, ballot.entry(vote.cast)) then
+                if event.votes[key] == vote then
+                    event.votes[key] = nil
+                end
+
+                mark_published(event_id, vote)
             end
         end
     end
@@ -287,23 +331,36 @@ local function flush_http(at: number, sync: boolean)
         end
     end
 
-    if next(entries) == nil then
-        return
+    if next(entries) ~= nil then
+        local ok, snapshots = http_backend.publish(server_id, entries, sync)
+        if not ok then
+            http_breaker:failure()
+            trace("live", `http publish failed, breaker {http_breaker:state()}`)
+            return
+        end
+
+        http_breaker:success()
+        for event_id, entry in entries do
+            local event = events[event_id]
+            event.sent = entry
+            event.sent_at = at
+            apply(event, if snapshots then snapshots[event_id] else nil)
+        end
     end
 
-    local ok, snapshots = http_backend.publish(server_id, entries, sync)
-    if not ok then
-        http_breaker:failure()
-        trace("live", `http publish failed, breaker {http_breaker:state()}`)
-        return
-    end
+    for event_id, event in events do
+        for key, vote in event.votes do
+            if not http_backend.publish(key, { [event_id] = ballot.entry(vote.cast) }, sync) then
+                http_breaker:failure()
+                return
+            end
 
-    http_breaker:success()
-    for event_id, entry in entries do
-        local event = events[event_id]
-        event.sent = entry
-        event.sent_at = at
-        apply(event, if snapshots then snapshots[event_id] else nil)
+            if event.votes[key] == vote then
+                event.votes[key] = nil
+            end
+
+            mark_published(event_id, vote)
+        end
     end
 end
 
@@ -491,6 +548,7 @@ function live.start()
                 shards = definition.shards,
             },
             entry = counter.entry(),
+            votes = {},
             sent = counter.entry(),
             sent_at = 0,
             snapshot = nil,
@@ -560,6 +618,7 @@ function live.start()
     end)
 
     profiles.on_loaded(function(player)
+        queue_unpublished(player)
         push_mine(player)
     end)
 

@@ -192,9 +192,12 @@ local function gift_benchmark(bench: { profiles.Loaded }, count: number)
 
         local seq = data.outbox[tx_id].seq
         local started = os.clock()
-        gift_service.deliver(sender.account, function(_, message)
-            return profiles.message_key(BENCH_KEYS[2], message)
-        end)
+        gift_service.deliver(
+            sender.account,
+            gift_service.reserved(function(_, message)
+                return profiles.message_key(BENCH_KEYS[2], message)
+            end)
+        )
 
         local deadline = os.clock() + DELIVERY_TIMEOUT
         while seen() < seq and os.clock() < deadline do

@@ -55,15 +55,18 @@ resend.
 setting later would move servers to other shards and count them twice, so it only applies to new
 events (events from before shards existed keep one). A server always writes shard
 `hash(server) % shards`, and each shard has its own hash tag, so on a Redis Cluster
-(`REDIS_CLUSTER_NODES`) the shards spread over the nodes. A Lua script per shard keeps the maximum per server and option and moves that
-shard's totals by the difference, atomically. The event total is the sum of its shards and its
-version the sum of theirs, so both only grow. Requests are batched every 25 ms, one script call per
-touched shard per batch, and every request waits for its batch to land, so an ack still means
-stored. The response carries the totals, so one request publishes and reads: shards the batch did
-not touch come from the instance's copy, at most `EVENTS_TOTALS_REFRESH_MS` (1 s) old, and a goal
-is marked reached at most that late. `GET /v1/events/:id` always reads every shard. A server
-publishes every event that is due, including one it only reads (no votes yet), and Roblox encodes
-that empty table as `[]`, so the service takes `[]` as an empty contribution.
+(`REDIS_CLUSTER_NODES`) the shards spread over the nodes. A Lua script per shard keeps the maximum
+per server and option and moves that shard's totals by the difference, atomically. A player's vote
+entry (`v-<userId>`) is published the same way and counts in the totals but not as an active
+server. The event total is the sum of its shards and its version the sum of theirs, so both only
+grow. Requests are batched every 25 ms, one script call per touched shard per batch, and every
+request waits for its batch to land, so an ack still means stored. The response carries the totals,
+so one request publishes and reads: shards the batch did not touch come from the instance's copy,
+at most `EVENTS_TOTALS_REFRESH_MS` (1 s) old, except while the event has a goal not yet reached,
+when every shard is read so the goal is marked in the batch that crosses it, whichever instance
+serves it. `GET /v1/events/:id` always reads every shard. A server publishes every event that is
+due, including one it only reads (no votes yet), and Roblox encodes that empty table as `[]`, so the
+service takes `[]` as an empty contribution.
 
 Measured with `mise run load` on a MacBook Air M2 (Colima VM, 6 CPUs, 8 GB): 2,000 simulated
 servers publishing their total every ~2 s for 2 minutes sent 119,388 requests (975 per second) at
@@ -90,22 +93,25 @@ reached the service within one flush and the game showed the service's total eve
 
 ## Numbers (`tests/live_capacity.spec.luau`, 50% headroom on every limit)
 
+Peaks assume every player votes, so the vote event holds one entry per player; shards are sized by
+bytes (servers and voters) and by write rate, whichever needs more.
+
 | Scenario | Servers | Shards / groups | RU share | Stale typical / worst / no MessagingService |
 |---|---|---|---|---|
 | Typical day (85k CCU) | 4,260 | 171 / 1 | 2.9% | 6.5 s / 14 s / 27 s |
-| Saturday peak of a group of games (7.56M) | 945,568 | 37,823 / 148 | 7.2% | 6.5 s / 14.4 s / 28 s |
-| Single-game peak (14.3M) | 1,786,691 | 71,468 / 280 | 6.4% | 6.5 s / 14.6 s / 35 s |
-| Largest single-game peak (25.8M) | 3,229,528 | 129,182 / 505 | 6.0% | 6.5 s / 14.9 s / 46 s |
-| 25.8M at 4 per server | 6,459,056 | 258,363 / 1,010 | 11.4% | 7.5 s / 17.7 s / 75 s |
-| 76M at 8 per server | 9,500,000 | 380,000 / 1,485 | 5.6% | 7.5 s / 18.5 s / 99 s |
-| 76M at 4 per server | 19,000,000 | 760,000 / 2,969 | 11.1% | 8.5 s / 22.8 s / 178 s |
+| Saturday peak of a group of games (7.56M) | 945,568 | 107,763 / 421 | 8.0% | 6.5 s / 14.8 s / 28 s |
+| Single-game peak (14.3M) | 1,786,691 | 203,623 / 796 | 7.2% | 6.5 s / 15.4 s / 35 s |
+| Largest single-game peak (25.8M) | 3,229,528 | 368,058 / 1,438 | 6.8% | 7.5 s / 18.4 s / 50 s |
+| 25.8M at 4 per server | 6,459,056 | 413,722 / 1,617 | 12.1% | 7.5 s / 18.7 s / 76 s |
+| 76M at 8 per server | 9,500,000 | 1,082,679 / 4,230 | 6.4% | 9.5 s / 26.8 s / 108 s |
+| 76M at 4 per server | 19,000,000 | 1,217,008 / 4,754 | 11.7% | 10.5 s / 29.6 s / 185 s |
 
-The same spec searches the largest CCU that still fits every limit: ~32.4M servers, so 129M CCU at
-4 players per server and 259M at 8, where the worst staleness reaches its 30 s bound
-(`max_staleness`). Before the root pass was spaced by its own length it had to fit in 2 s, which
-capped the design at ~5.73M servers (22.9M CCU at 4 per server, 45.9M at 8) with every other limit
-still far off. Without MessagingService, servers poll one of at most 1,024 replicas, so that
-fallback slows to minutes at the largest server counts.
+The same spec searches the largest CCU that still fits every limit with every player voting: 80.8M
+at 4 players per server, 90.9M at 8 and 98.2M at 20, where the worst staleness reaches its 30 s
+bound (`max_staleness`). Before the root pass was spaced by its own length it had to fit in 2 s,
+which capped the design at ~5.73M servers (22.9M CCU at 4 per server, 45.9M at 8) with every other
+limit still far off. Without MessagingService, servers poll one of at most 1,024 replicas, so that
+fallback slows to minutes at the largest server counts; the totals stay correct and never go back.
 
 Simpler designs break much earlier (same spec): every server broadcasting its count ~64 CCU, every
 server contesting one leader key ~664 CCU, one counter key ~2,000 CCU, one total key read by
@@ -150,13 +156,17 @@ three transient `InternalError`s on the root `HashMap.Set`.
 
 ## Players and durability
 
-- **One vote per player, on any server.** The ballot is saved in the player's profile, tagged with
-  the server that counted it, and only then added to that server's counter. A player can change the
-  vote on that server (retract and add in the same entry); on any other server the saved ballot
-  blocks a second vote. A crash can lose a vote (the save landed, the flush did not), but no
-  sequence of saves, flushes and crashes counts a player twice (`live_player_state.spec`, 400 random
-  steps). Moving a vote across servers would need per-player state in the shared store, and at 25.8M
-  CCU that is one key per voter.
+- **One vote per player, counted exactly once, changeable on any server.** A vote is the player's
+  own cumulative tally (`plus` per option chosen, `minus` per option left), saved in the profile
+  first and then published as the player's own entry (`v-<userId>`) in the same shards, where the
+  store keeps the maximum per entry like a server's. Publishing it twice, late or from another
+  server changes nothing, so a crash between the save and the publish loses nothing: the profile
+  marks the vote published once it lands, and the next session republishes any vote that is not.
+  Voter entries are not counted as servers. `live_player_state.spec` runs 400 random steps of failed
+  saves, lost publishes, crashes and moves and requires the count to equal the saved ballots
+  exactly; `StressTest` changes and republishes out-of-order ballots on the real MemoryStore and
+  ends exact. Ballots saved before this design (`{option, server}`) stay locked, since their old
+  server's entry may already count them.
 - **Goal rewards once per player.** When the global snapshot says the goal was reached, each online
   player gets the reward, and the mark that they got it is written in the same profile mutation, so
   saves can never grant it twice.

@@ -26,6 +26,16 @@
 			"Schema": {
 				"$path": "schema"
 			}
+		},
+		"StarterPlayer": {
+			"$ignoreUnknownInstances": true,
+			"StarterPlayerScripts": {
+				"$ignoreUnknownInstances": true,
+				"Client": {
+					"$className": "Folder",
+					"$ignoreUnknownInstances": false
+				}
+			}
 		}
 	}
 }

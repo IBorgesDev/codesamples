@@ -13,7 +13,6 @@ export interface BatchStore {
 
 export type RedisBatchStoreOptions = {
   shards: number;
-  streamMaxLen: number;
   dedupeTtlSeconds: number;
 };
 
@@ -43,7 +42,7 @@ export class RedisBatchStore implements BatchStore {
     const shard = shardOf(serverId, this.options.shards);
     const added = await this.runAppend(
       [seenKey(shard, serverId, batchSeq), streamKey(shard)],
-      [this.options.dedupeTtlSeconds, this.options.streamMaxLen, payload],
+      [this.options.dedupeTtlSeconds, payload],
     );
 
     return Number(added) === 1 ? "appended" : "duplicate";

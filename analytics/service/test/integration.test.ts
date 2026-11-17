@@ -107,7 +107,7 @@ function storedAt(serverId: string, seq: number, nowSeconds: number): StoredBatc
 }
 
 function storeOn(connection: Redis) {
-  return new RedisBatchStore(connection, { shards: SHARDS, streamMaxLen: 1_000, dedupeTtlSeconds: 60 });
+  return new RedisBatchStore(connection, { shards: SHARDS, dedupeTtlSeconds: 60 });
 }
 
 const connections: Redis[] = [];
@@ -167,6 +167,41 @@ describe.skipIf(redis === null)("Redis stream store (real Redis)", () => {
     expect(await store.backlog()).toBe(3);
     await stream.ack(read.map((entry) => entry.id));
     expect(await store.backlog()).toBe(1);
+  });
+
+  it("trims only what every consumer has acknowledged, never a pending or unread entry", async () => {
+    const key = streamKey(0);
+    await new RedisShardStream(connection(), key, "reader").ensureGroup();
+    for (let n = 0; n < 600; n++) {
+      await live.xadd(key, "*", "batch", String(n));
+    }
+
+    const stream = new RedisShardStream(connection(), key, "reader");
+    const read = await stream.readNew(400, 10);
+    const ids = read.map((entry) => entry.id);
+    await stream.ack(ids.slice(0, 350));
+    const kept = await live.xrange(key, ids[350] as string, "+");
+    expect(kept.length).toBe(250);
+    expect(await live.xlen(key)).toBeLessThan(600);
+
+    const dead = new RedisShardStream(connection(), key, "dead");
+    const abandoned = await dead.readNew(100, 10);
+    await stream.ack(ids.slice(350));
+    expect((await live.xrange(key, abandoned[0]?.id as string, "+")).length).toBe(200);
+    expect(((await live.xpending(key, "clickhouse")) as unknown[])[0]).toBe(100);
+  });
+
+  it("drops acknowledged entries once every group has read past them", async () => {
+    const key = streamKey(0);
+    await new RedisShardStream(connection(), key, "reader").ensureGroup();
+    for (let n = 0; n < 1_000; n++) {
+      await live.xadd(key, "*", "batch", String(n));
+    }
+
+    const stream = new RedisShardStream(connection(), key, "reader");
+    const read = await stream.readNew(1_000, 10);
+    await stream.ack(read.map((entry) => entry.id));
+    expect(await live.xlen(key)).toBeLessThan(200);
   });
 
   it("serves the ingest route end to end, answering a retry as a duplicate", async () => {
