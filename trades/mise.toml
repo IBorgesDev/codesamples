@@ -22,4 +22,4 @@ run = "rojo sourcemap default.project.json -o sourcemap.json"
 
 [tasks.fmt]
 description = "Format the Luau code with StyLua"
-run = "stylua src tests"
+run = "stylua src"

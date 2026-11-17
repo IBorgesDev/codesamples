@@ -17,7 +17,6 @@ tuning.analytics = table.freeze({
 })
 
 tuning.http = table.freeze({
-    per_minute = 500,
     shares = table.freeze({
         analytics = 240,
     }),

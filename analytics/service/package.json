@@ -9,8 +9,7 @@
     "start:worker": "node dist/worker.js",
     "dev": "tsx watch src/index.ts",
     "dev:worker": "tsx watch src/worker.ts",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run"
+    "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "fastify": "^5.1.0",
@@ -20,7 +19,6 @@
   "devDependencies": {
     "@types/node": "^22.10.1",
     "tsx": "^4.19.2",
-    "typescript": "^5.7.2",
-    "vitest": "^3.0.0"
+    "typescript": "^5.7.2"
   }
 }

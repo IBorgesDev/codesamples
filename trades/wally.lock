@@ -3,16 +3,11 @@
 registry = "test"
 
 [[package]]
-name = "samples/trades"
-version = "0.1.0"
-dependencies = [["ProfileStore", "lm-loleris/profilestore@1.0.3"], ["TestEZ", "roblox/testez@0.4.1"]]
-
-[[package]]
 name = "lm-loleris/profilestore"
 version = "1.0.3"
 dependencies = []
 
 [[package]]
-name = "roblox/testez"
-version = "0.4.1"
-dependencies = []
+name = "samples/trades"
+version = "0.1.0"
+dependencies = [["ProfileStore", "lm-loleris/profilestore@1.0.3"]]

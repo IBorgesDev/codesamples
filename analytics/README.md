@@ -10,9 +10,8 @@ down, and each batch is still stored exactly once, without the game ever waiting
 
 ```bash
 mise install
-mise run install
 mise run serve
 ```
 
-Connect the Rojo plugin in Studio (port 34875) and allow HTTP requests. Every playtest runs the tests
-first. `mise run up` starts Redis, ClickHouse, the ingest and the worker with Docker.
+Connect the Rojo plugin in Studio (port 34875) and allow HTTP requests. `mise run up` starts Redis,
+ClickHouse, the ingest and the worker with Docker.

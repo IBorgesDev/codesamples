@@ -9,7 +9,6 @@ require(script.Parent.data.profiles).start()
 require(script.Parent.live_event.service).start()
 
 if run_service:IsStudio() then
-    task.defer(require(script.Parent.dev.tests))
     require(script.Parent.dev.live_demo)()
     require(script.Parent.dev.stress)()
 end

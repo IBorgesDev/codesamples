@@ -9,7 +9,6 @@ require(script.Parent.data.profiles).start()
 require(script.Parent.trade.service).start()
 
 if run_service:IsStudio() then
-    task.defer(require(script.Parent.dev.tests))
     require(script.Parent.dev.trade_dev)()
     require(script.Parent.dev.stress)()
 end

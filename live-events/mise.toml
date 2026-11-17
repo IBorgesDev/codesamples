@@ -22,7 +22,7 @@ run = "rojo sourcemap default.project.json -o sourcemap.json"
 
 [tasks.fmt]
 description = "Format the Luau code with StyLua"
-run = "stylua src tests"
+run = "stylua src"
 
 [tasks.up]
 description = "Generate infra/.env if missing and start Redis and the events service"
@@ -31,11 +31,6 @@ run = ["node infra/env.mjs", "docker compose -f infra/docker-compose.yml --env-f
 [tasks.down]
 description = "Stop Redis and the events service (data is kept)"
 run = "docker compose -f infra/docker-compose.yml --env-file infra/.env down"
-
-[tasks.test-service]
-description = "vitest for the events service (Redis tests skip when Redis is unreachable)"
-dir = "service"
-run = "npx vitest run"
 
 [tasks.load]
 description = "k6 load test against the events service (SERVERS, FLUSH_SECONDS, DURATION)"

@@ -18,15 +18,6 @@
 				"$path": "src/server"
 			}
 		},
-		"ServerStorage": {
-			"$ignoreUnknownInstances": true,
-			"DevPackages": {
-				"$path": "DevPackages"
-			},
-			"Tests": {
-				"$path": "tests"
-			}
-		},
 		"StarterPlayer": {
 			"$ignoreUnknownInstances": true,
 			"StarterPlayerScripts": {

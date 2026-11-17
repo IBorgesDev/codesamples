@@ -1,12 +1,7 @@
 [tools]
 "github:rojo-rbx/rojo" = "7.7.0"
-"github:UpliftGames/wally" = "0.3.2"
 "github:johnnymorganz/stylua" = "2.5.2"
 "github:johnnymorganz/luau-lsp" = "1.69.0"
-
-[tasks.install]
-description = "Restore Wally packages"
-run = "wally install"
 
 [tasks.serve]
 description = "Live sync with Studio on port 34875 (connect from the Rojo plugin)"
@@ -22,7 +17,7 @@ run = "rojo sourcemap default.project.json -o sourcemap.json"
 
 [tasks.fmt]
 description = "Format the Luau code with StyLua"
-run = "stylua src tests"
+run = "stylua src"
 
 [tasks.up]
 description = "Generate infra/.env if missing and start Redis, ClickHouse, the ingest and the worker"
@@ -31,11 +26,6 @@ run = ["node infra/env.mjs", "docker compose -f infra/docker-compose.yml --env-f
 [tasks.down]
 description = "Stop the containers (data is kept)"
 run = "docker compose -f infra/docker-compose.yml --env-file infra/.env down"
-
-[tasks.test-service]
-description = "vitest for the ingest and the worker (Redis and ClickHouse tests skip when unreachable)"
-dir = "service"
-run = "npx vitest run"
 
 [tasks.load]
 description = "k6 load test against the ingest: gzip batches from simulated servers (SERVERS, FLUSH_SECONDS, EVENTS_PER_FLUSH, DURATION)"

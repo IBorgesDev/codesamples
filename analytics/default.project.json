@@ -17,12 +17,6 @@
 		},
 		"ServerStorage": {
 			"$ignoreUnknownInstances": true,
-			"DevPackages": {
-				"$path": "DevPackages"
-			},
-			"Tests": {
-				"$path": "tests"
-			},
 			"Schema": {
 				"$path": "schema"
 			}

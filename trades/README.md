@@ -14,5 +14,4 @@ mise run install
 mise run serve
 ```
 
-Connect the Rojo plugin in Studio (port 34875) and enable Studio Access to API Services. Every
-playtest runs the tests first.
+Connect the Rojo plugin in Studio (port 34875) and enable Studio Access to API Services.

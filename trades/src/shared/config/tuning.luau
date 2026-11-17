@@ -64,22 +64,4 @@ tuning.ui = table.freeze({
     notice_seconds = 3,
 })
 
-tuning.platform = table.freeze({
-    memory_store = table.freeze({
-        ru_base = 1_000,
-        ru_per_ccu = 120,
-        read_per_key = 15_000,
-        partitions_per_map = 20,
-        per_partition = 30_000,
-        memory_base = 64 * 1024,
-        memory_per_ccu = 1.2 * 1024,
-    }),
-    messaging = table.freeze({
-        per_game_base = 400,
-        per_game_per_server = 200,
-    }),
-    safety = 0.5,
-    trade_ru_share = 0.25,
-})
-
 return table.freeze(tuning)
