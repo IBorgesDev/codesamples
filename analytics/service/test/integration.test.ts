@@ -289,9 +289,10 @@ describe.skipIf(redis === null || !clickhouseUp)("Redis to ClickHouse (real serv
   });
 
   it("drops a re-inserted group with the same token", async () => {
-    const server = `it-dedup-${Date.now()}`;
-    const rows = toRows(storedAt(server, 1, Date.now() / 1000));
-    const token = dedupToken(streamKey(0), ["1-0", "2-0"]);
+    const stamp = Date.now();
+    const server = `it-dedup-${stamp}`;
+    const rows = toRows(storedAt(server, 1, stamp / 1000));
+    const token = dedupToken(streamKey(0), [`${stamp}-0`, `${stamp}-1`]);
     await clickhouse.insert("analytics.events", rows, token);
     await clickhouse.insert("analytics.events", rows, token);
     expect(await rowsFor(server)).toBe(rows.length);

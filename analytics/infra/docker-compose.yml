@@ -112,6 +112,14 @@ services:
       analytics:
         condition: service_healthy
 
+  tunnel:
+    image: cloudflare/cloudflared:2025.9.1
+    profiles: [tunnel]
+    command: ["tunnel", "--no-autoupdate", "--url", "http://analytics:8080"]
+    depends_on:
+      analytics:
+        condition: service_healthy
+
 volumes:
   redis-data:
   clickhouse-data:

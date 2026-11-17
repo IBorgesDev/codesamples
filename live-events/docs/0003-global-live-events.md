@@ -50,12 +50,19 @@ resend.
 **Redis backend** (`service/`): the same counter. A Lua script keeps the maximum per server
 and option and moves the totals by the difference, atomically. Requests are batched every 25 ms, one
 script call per event per batch, and every request waits for its batch to land, so an ack still
-means stored. The response carries the totals, so one request publishes and reads.
+means stored. The response carries the totals, so one request publishes and reads. A server
+publishes every event that is due, including one it only reads (no votes yet), and Roblox encodes
+that empty table as `[]`, so the service takes `[]` as an empty contribution.
 
 Measured with `mise run load` on a MacBook Air M2 (Colima VM, 6 CPUs, 8 GB): 2,000 simulated
 servers publishing their total every ~2 s for 2 minutes sent 119,388 requests (975 per second) at
 p50 15.6 ms, p95 27.4 ms, p99 82.4 ms, with no failed request. The stored total matched the fish
-the servers had acknowledged exactly (2,323,844). All 16 service tests pass against real Redis.
+the servers had acknowledged exactly (2,323,844). All 17 service tests pass against real Redis.
+
+End to end, a Studio playtest on the HTTP backend (`LiveEventBackend = "http"`, the service behind
+`mise run tunnel`) is what found the `[]` case: every publish got a 400 while the game kept showing
+its archived total plus its own fish, so players saw nothing wrong. With the fix the server's fish
+reached the service within one flush and the game showed the service's total every ~5 s.
 
 ## Numbers (`tests/live_capacity.spec.luau`, 50% headroom on every limit)
 

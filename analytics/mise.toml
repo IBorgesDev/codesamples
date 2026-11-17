@@ -40,3 +40,7 @@ run = "npx vitest run"
 [tasks.load]
 description = "k6 load test against the ingest: gzip batches from simulated servers (SERVERS, FLUSH_SECONDS, EVENTS_PER_FLUSH, DURATION)"
 run = "docker compose -f infra/docker-compose.yml --env-file infra/.env --profile load run --rm k6"
+
+[tasks.tunnel]
+description = "Public HTTPS URL for the ingest, so a Studio playtest can reach it"
+run = "docker compose -f infra/docker-compose.yml --env-file infra/.env --profile tunnel up tunnel"

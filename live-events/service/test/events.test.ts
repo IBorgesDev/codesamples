@@ -161,6 +161,16 @@ describe.skipIf(!reachable)("events service", () => {
     expect(result.missing).toEqual(["ghost"]);
   });
 
+  it("reads an event the server has no contribution for, sent as an empty array the way Roblox encodes an empty table", async () => {
+    await create("boss_vote", { options: ["kraken"] });
+    await publish("s2", { boss_vote: { plus: { kraken: 2 } } });
+    const empty = await app.inject({ method: "POST", url: "/v1/publish", headers: SERVER, payload: { server: "s1", events: { boss_vote: [] } } });
+    const filled = await app.inject({ method: "POST", url: "/v1/publish", headers: SERVER, payload: { server: "s1", events: { boss_vote: [1] } } });
+    expect(empty.statusCode).toBe(200);
+    expect(empty.json().events.boss_vote.totals).toEqual({ kraken: 2 });
+    expect(filled.statusCode).toBe(400);
+  });
+
   it("rejects missing tokens and malformed payloads", async () => {
     await create("fishing", { options: ["fish"] });
     const unauthorized = await app.inject({ method: "POST", url: "/v1/publish", payload: { server: "s1", events: { fishing: {} } } });

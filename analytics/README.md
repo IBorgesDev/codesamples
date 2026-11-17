@@ -27,9 +27,10 @@ mise run serve
 Then Connect in the Studio Rojo plugin (port 34875) and turn on **Allow HTTP Requests** (Experience
 Settings → Security). Every playtest runs the specs first and prints `[tests] all N passed`.
 
-To store events: `mise run up` starts Redis, ClickHouse, the ingest and the worker with Docker; give
-the game a public URL to the ingest and set the Local Secrets `analytics_url` and `analytics_token`
-(`ANALYTICS_SERVER_TOKEN` from `infra/.env`). Without them the SDK counts events and discards them.
+To store events: `mise run up` starts Redis, ClickHouse, the ingest and the worker with Docker,
+`mise run tunnel` gives the ingest a public URL, and the Local Secrets `analytics_url` and
+`analytics_token` (`ANALYTICS_SERVER_TOKEN` from `infra/.env`) point the game at it. Without them the
+SDK counts events and discards them.
 `mise run test-service` and `mise run load` test the service.
 
 ## Studio test hooks

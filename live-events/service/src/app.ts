@@ -141,7 +141,7 @@ export function buildApp({ store, redis, config, coalescer, now = () => Math.flo
   );
 
   app.post<{
-    Body: { server: string; events: Record<string, { plus?: Record<string, number>; minus?: Record<string, number> }> };
+    Body: { server: string; events: Record<string, { plus?: Record<string, number>; minus?: Record<string, number> } | []> };
     Querystring: { sync?: string };
   }>(
     "/v1/publish",
@@ -160,9 +160,10 @@ export function buildApp({ store, redis, config, coalescer, now = () => Math.flo
               maxProperties: config.maxEventsPerPublish,
               propertyNames: { pattern: ID },
               additionalProperties: {
-                type: "object",
-                additionalProperties: false,
-                properties: { plus: tally, minus: tally },
+                anyOf: [
+                  { type: "object", additionalProperties: false, properties: { plus: tally, minus: tally } },
+                  { type: "array", maxItems: 0 },
+                ],
               },
             },
           },
@@ -172,7 +173,9 @@ export function buildApp({ store, redis, config, coalescer, now = () => Math.flo
     async (request) => {
       const events: Record<string, Contribution> = {};
       for (const [id, contribution] of Object.entries(request.body.events)) {
-        events[id] = { plus: contribution.plus ?? {}, minus: contribution.minus ?? {} };
+        events[id] = Array.isArray(contribution)
+          ? { plus: {}, minus: {} }
+          : { plus: contribution.plus ?? {}, minus: contribution.minus ?? {} };
       }
 
       const sync = request.query.sync === "1" || !coalescer;

@@ -100,3 +100,7 @@ such.
   22.5 ms, p99 11.7 and 96.9 ms (the slower one shared the VM with the dashboard polling every
   5 s). After the worker drained, ClickHouse held exactly the events accepted (1,199,720 and
   1,194,920): no duplicates, no losses.
+- **End to end from Studio** (the ingest behind `mise run tunnel`, Local Secrets set): a Play Solo
+  with `AnalyticsDemo` sent a batch about every 10 s, and ClickHouse stored all 36 events of its 10
+  batches with the real place and user ids, none rejected, with `session_end` arriving when the
+  playtest stopped.
