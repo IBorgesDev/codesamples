@@ -91,6 +91,12 @@ such.
 - **`clickhouse/init.sql` runs only on an empty volume.** An existing `clickhouse-data` volume
   needs `docker compose down -v` (which also wipes Redis), or the SQL applied by hand (it is
   idempotent).
-- **Not run yet**: the Lua script on real Redis, `init.sql` on ClickHouse 25.8 and the k6 load test
-  need Docker. The 93 service tests that run without it pass; the 10 integration tests skip
-  themselves when Redis or ClickHouse is unreachable.
+- **Measured with Docker** (MacBook Air M2, 16 GB; a Colima VM with 6 CPUs and 8 GB running Redis
+  7.4, ClickHouse 25.8.33, the ingest and the worker): `init.sql` creates the tables and the
+  materialized view on a fresh volume, and all 103 service tests pass, the 10 integration tests
+  included, against real Redis and ClickHouse. `mise run load` with its defaults (1,250 simulated
+  servers, a gzip batch of 40 events every ~5 s, 2 minutes) stored ~29,900 batches at ~237 per
+  second, ~9,500 events per second, with 0 failed requests and no 503. Two runs: p95 6.2 and
+  22.5 ms, p99 11.7 and 96.9 ms (the slower one shared the VM with the dashboard polling every
+  5 s). After the worker drained, ClickHouse held exactly the events accepted (1,199,720 and
+  1,194,920): no duplicates, no losses.

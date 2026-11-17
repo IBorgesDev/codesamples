@@ -15,6 +15,12 @@ const RUN = Date.now().toString(36);
 
 const catalog = JSON.parse(open(__ENV.SCHEMA_PATH || "/schema/events.json"));
 const NAMES = Object.keys(catalog.events);
+const KNOWN_VALUES = {
+  trade_completed: { outcome: ["committed", "committed", "committed", "aborted", "refused"] },
+  live_contribution: { event_id: ["world_fishing"] },
+  live_vote: { event_id: ["boss_vote"], option: ["kraken", "megalodon", "leviathan"] },
+  live_reward: { event_id: ["world_fishing", "boss_vote"] },
+};
 
 const accepted = new Counter("events_accepted");
 const rejected = new Counter("events_rejected");
@@ -49,7 +55,12 @@ function pick(list) {
   return list[Math.floor(Math.random() * list.length)];
 }
 
-function propValue(type, name) {
+function propValue(event, type, name) {
+  const known = KNOWN_VALUES[event] && KNOWN_VALUES[event][name];
+  if (known) {
+    return pick(known);
+  }
+
   if (type === "boolean") {
     return Math.random() < 0.5;
   }
@@ -69,7 +80,7 @@ function randomEvent(now) {
   const name = pick(NAMES);
   const props = {};
   for (const [prop, type] of Object.entries(catalog.events[name].props)) {
-    props[prop] = propValue(type, prop);
+    props[prop] = propValue(name, type, prop);
   }
 
   const player = Math.floor(Math.random() * PLAYERS_PER_SERVER);

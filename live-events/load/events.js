@@ -24,6 +24,7 @@ export const options = {
       gracefulStop: "10s",
     },
   },
+  summaryTrendStats: ["avg", "min", "med", "max", "p(95)", "p(99)"],
   thresholds: {
     http_req_failed: ["rate<0.001"],
     "http_req_duration{name:publish}": ["p(95)<100", "p(99)<250"],
@@ -68,7 +69,7 @@ export function handleSummary(data) {
   const lines = [
     `servers (VUs): ${SERVERS}, flush every ~${FLUSH_SECONDS}s, ${DURATION}`,
     `requests: ${requests.count} (${requests.rate.toFixed(0)}/s)`,
-    `publish latency p50 ${publish.values.med.toFixed(1)} ms, p95 ${publish.values["p(95)"].toFixed(1)} ms, max ${publish.values.max.toFixed(1)} ms`,
+    `publish latency p50 ${publish.values.med.toFixed(1)} ms, p95 ${publish.values["p(95)"].toFixed(1)} ms, p99 ${publish.values["p(99)"].toFixed(1)} ms, max ${publish.values.max.toFixed(1)} ms`,
     `failed: ${(data.metrics.http_req_failed.values.rate * 100).toFixed(3)}%`,
     `fish acknowledged by clients: ${sent}, total stored: ${total}, ${sent === total ? "EXACT" : "MISMATCH"}`,
   ];

@@ -52,6 +52,11 @@ and option and moves the totals by the difference, atomically. Requests are batc
 script call per event per batch, and every request waits for its batch to land, so an ack still
 means stored. The response carries the totals, so one request publishes and reads.
 
+Measured with `mise run load` on a MacBook Air M2 (Colima VM, 6 CPUs, 8 GB): 2,000 simulated
+servers publishing their total every ~2 s for 2 minutes sent 119,388 requests (975 per second) at
+p50 15.6 ms, p95 27.4 ms, p99 82.4 ms, with no failed request. The stored total matched the fish
+the servers had acknowledged exactly (2,323,844). All 16 service tests pass against real Redis.
+
 ## Numbers (`tests/live_capacity.spec.luau`, 50% headroom on every limit)
 
 | Scenario | Servers | Shards / groups | RU share | Stale typical / worst / no MessagingService |
