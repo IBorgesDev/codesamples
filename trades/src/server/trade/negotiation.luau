@@ -1,0 +1,140 @@
+--!strict
+
+local replicated_storage = game:GetService("ReplicatedStorage")
+
+local tuning = require(replicated_storage.Shared.config.tuning)
+local types = require(script.Parent.types)
+
+type Item = types.Item
+type Items = types.Items
+
+export type Party = {
+    user_id: number,
+    coins: number,
+    items: Items,
+    count: number,
+    accepted: boolean,
+}
+
+export type State = "negotiating" | "locked" | "cancelled"
+
+export type Session = {
+    id: string,
+    a: Party,
+    b: Party,
+    version: number,
+    lock_at: number?,
+    state: State,
+}
+
+export type Op =
+    { kind: "coins", amount: number }
+    | { kind: "add", item_id: string, item: Item }
+    | { kind: "remove", item_id: string }
+    | { kind: "accept", version: number }
+    | { kind: "cancel" }
+
+local negotiation = {}
+
+local function party(user_id: number): Party
+    return { user_id = user_id, coins = 0, items = {}, count = 0, accepted = false }
+end
+
+function negotiation.new(id: string, a_user_id: number, b_user_id: number): Session
+    assert(a_user_id ~= b_user_id, "a player cannot trade with themselves")
+
+    return { id = id, a = party(a_user_id), b = party(b_user_id), version = 1, lock_at = nil, state = "negotiating" }
+end
+
+function negotiation.party(session: Session, user_id: number): Party?
+    if session.a.user_id == user_id then
+        return session.a
+    end
+
+    if session.b.user_id == user_id then
+        return session.b
+    end
+
+    return nil
+end
+
+local function changed(session: Session)
+    session.version += 1
+    session.a.accepted = false
+    session.b.accepted = false
+    session.lock_at = nil
+end
+
+function negotiation.apply(session: Session, user_id: number, op: Op, now: number): (boolean, string?)
+    if session.state ~= "negotiating" then
+        return false, "closed"
+    end
+
+    local me = negotiation.party(session, user_id)
+
+    if not me then
+        return false, "not_party"
+    end
+
+    if op.kind == "coins" then
+        local amount = op.amount
+
+        if amount % 1 ~= 0 or amount < 0 or amount > tuning.trade.max_coins_per_side then
+            return false, "coins"
+        end
+
+        if amount == me.coins then
+            return true, nil
+        end
+
+        me.coins = amount
+        changed(session)
+    elseif op.kind == "add" then
+        if me.items[op.item_id] then
+            return true, nil
+        end
+
+        if me.count >= tuning.trade.max_items_per_side then
+            return false, "full"
+        end
+
+        me.items[op.item_id] = table.clone(op.item)
+        me.count += 1
+        changed(session)
+    elseif op.kind == "remove" then
+        if not me.items[op.item_id] then
+            return true, nil
+        end
+
+        me.items[op.item_id] = nil
+        me.count -= 1
+        changed(session)
+    elseif op.kind == "accept" then
+        if op.version ~= session.version then
+            return false, "stale"
+        end
+
+        me.accepted = true
+        if session.a.accepted and session.b.accepted and session.lock_at == nil then
+            session.lock_at = now + tuning.trade.countdown
+        end
+    elseif op.kind == "cancel" then
+        session.state = "cancelled"
+    end
+
+    return true, nil
+end
+
+function negotiation.tick(session: Session, now: number): boolean
+    local lock_at = session.lock_at
+
+    if session.state ~= "negotiating" or lock_at == nil or now < lock_at then
+        return false
+    end
+
+    session.state = "locked"
+
+    return true
+end
+
+return negotiation

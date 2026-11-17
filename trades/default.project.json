@@ -1,0 +1,40 @@
+{
+	"name": "trades",
+	"servePort": 34875,
+	"tree": {
+		"$className": "DataModel",
+		"ReplicatedStorage": {
+			"$ignoreUnknownInstances": true,
+			"Shared": {
+				"$path": "src/shared"
+			}
+		},
+		"ServerScriptService": {
+			"$ignoreUnknownInstances": true,
+			"ServerPackages": {
+				"$path": "ServerPackages"
+			},
+			"Server": {
+				"$path": "src/server"
+			}
+		},
+		"ServerStorage": {
+			"$ignoreUnknownInstances": true,
+			"DevPackages": {
+				"$path": "DevPackages"
+			},
+			"Tests": {
+				"$path": "tests"
+			}
+		},
+		"StarterPlayer": {
+			"$ignoreUnknownInstances": true,
+			"StarterPlayerScripts": {
+				"$ignoreUnknownInstances": true,
+				"Client": {
+					"$path": "src/client"
+				}
+			}
+		}
+	}
+}

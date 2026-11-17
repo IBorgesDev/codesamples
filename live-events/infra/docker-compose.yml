@@ -1,0 +1,69 @@
+name: live-events
+
+services:
+  redis:
+    image: redis:7.4-alpine
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+      - --maxmemory-policy
+      - noeviction
+      - --requirepass
+      - ${REDIS_PASSWORD:?set REDIS_PASSWORD in infra/.env}
+    environment:
+      REDISCLI_AUTH: ${REDIS_PASSWORD}
+    ports:
+      - 127.0.0.1:6379:6379
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  events:
+    build: ../service
+    environment:
+      PORT: 8080
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      EVENTS_SERVER_TOKEN: ${EVENTS_SERVER_TOKEN:?run mise run up to generate infra/.env}
+      EVENTS_ADMIN_TOKEN: ${EVENTS_ADMIN_TOKEN:?run mise run up to generate infra/.env}
+    ports:
+      - 127.0.0.1:8081:8080
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  k6:
+    image: grafana/k6:0.57.0
+    profiles: [load]
+    environment:
+      EVENTS_URL: http://events:8080
+      EVENTS_SERVER_TOKEN: ${EVENTS_SERVER_TOKEN}
+      EVENTS_ADMIN_TOKEN: ${EVENTS_ADMIN_TOKEN}
+      SERVERS: ${SERVERS:-2000}
+      FLUSH_SECONDS: ${FLUSH_SECONDS:-2}
+      DURATION: ${DURATION:-2m}
+    volumes:
+      - ../load:/scripts:ro
+    entrypoint: ["k6", "run"]
+    command: ["/scripts/events.js"]
+    depends_on:
+      events:
+        condition: service_healthy
+
+  tunnel:
+    image: cloudflare/cloudflared:2025.9.1
+    profiles: [tunnel]
+    command: ["tunnel", "--no-autoupdate", "--url", "http://events:8080"]
+    depends_on:
+      events:
+        condition: service_healthy
+
+volumes:
+  redis-data:

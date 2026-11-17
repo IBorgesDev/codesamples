@@ -1,0 +1,38 @@
+{
+    "version": 1,
+    "limits": {
+        "string_bytes": 64,
+        "server_id_bytes": 32,
+        "session_id_bytes": 40,
+        "batch_events": 500,
+        "batch_bytes": 262144,
+        "max_weight": 1000
+    },
+    "events": {
+        "session_start": {
+            "props": { "teleported": "boolean" }
+        },
+        "session_end": {
+            "props": { "seconds": "number" }
+        },
+        "trade_completed": {
+            "props": { "outcome": "string", "seconds": "number", "cross_server": "boolean" }
+        },
+        "gift_sent": {
+            "props": { "coins": "integer", "items": "integer" }
+        },
+        "live_contribution": {
+            "props": { "event_id": "string", "amount": "integer" },
+            "sample": 0.1
+        },
+        "live_vote": {
+            "props": { "event_id": "string", "option": "string" }
+        },
+        "live_reward": {
+            "props": { "event_id": "string" }
+        },
+        "purchase": {
+            "props": { "product_id": "integer", "robux": "integer" }
+        }
+    }
+}

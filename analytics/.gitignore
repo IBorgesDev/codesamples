@@ -1,0 +1,10 @@
+/ServerPackages
+/DevPackages
+/build
+/sourcemap.json
+*.rbxl
+*.rbxlx
+
+node_modules/
+dist/
+.env

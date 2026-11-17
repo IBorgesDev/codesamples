@@ -1,0 +1,117 @@
+name: analytics
+
+x-analytics-build: &analytics-build
+  context: ../service
+  additional_contexts:
+    schema: ../schema
+
+x-analytics-depends: &analytics-depends
+  redis:
+    condition: service_healthy
+  clickhouse:
+    condition: service_healthy
+
+services:
+  redis:
+    image: redis:7.4-alpine
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+      - --maxmemory-policy
+      - noeviction
+      - --requirepass
+      - ${REDIS_PASSWORD:?set REDIS_PASSWORD in infra/.env}
+    environment:
+      REDISCLI_AUTH: ${REDIS_PASSWORD}
+    ports:
+      - 127.0.0.1:6380:6379
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.8
+    environment:
+      CLICKHOUSE_DB: analytics
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-analytics}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?set CLICKHOUSE_PASSWORD in infra/.env}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    ports:
+      - 127.0.0.1:8123:8123
+      - 127.0.0.1:9000:9000
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - ../clickhouse/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: [CMD-SHELL, "clickhouse-client --user $$CLICKHOUSE_USER --password $$CLICKHOUSE_PASSWORD --query 'SELECT 1'"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  analytics:
+    build: *analytics-build
+    environment:
+      PORT: 8080
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      ANALYTICS_SERVER_TOKEN: ${ANALYTICS_SERVER_TOKEN:?run mise run up to generate infra/.env}
+      ANALYTICS_READ_TOKEN: ${ANALYTICS_READ_TOKEN:?run mise run up to generate infra/.env}
+      ANALYTICS_STREAM_SHARDS: ${ANALYTICS_STREAM_SHARDS:-4}
+      ANALYTICS_MAX_BACKLOG: ${ANALYTICS_MAX_BACKLOG:-20000}
+      ANALYTICS_STREAM_MAXLEN: ${ANALYTICS_STREAM_MAXLEN:-40000}
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-analytics}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+    ports:
+      - 127.0.0.1:8082:8080
+    depends_on: *analytics-depends
+    restart: unless-stopped
+
+  analytics-worker:
+    build: *analytics-build
+    command: ["node", "dist/worker.js"]
+    environment:
+      PORT: 8080
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      ANALYTICS_STREAM_SHARDS: ${ANALYTICS_STREAM_SHARDS:-4}
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-analytics}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+    ports:
+      - 127.0.0.1:8083:8080
+    depends_on: *analytics-depends
+    restart: unless-stopped
+
+  k6:
+    image: grafana/k6:0.57.0
+    profiles: [load]
+    environment:
+      ANALYTICS_URL: http://analytics:8080
+      ANALYTICS_SERVER_TOKEN: ${ANALYTICS_SERVER_TOKEN}
+      SCHEMA_PATH: /schema/events.json
+      SERVERS: ${SERVERS:-1250}
+      FLUSH_SECONDS: ${FLUSH_SECONDS:-5}
+      EVENTS_PER_FLUSH: ${EVENTS_PER_FLUSH:-40}
+      DURATION: ${DURATION:-2m}
+    volumes:
+      - ../load:/scripts:ro
+      - ../schema:/schema:ro
+    entrypoint: ["k6", "run"]
+    command: ["/scripts/analytics.js"]
+    depends_on:
+      analytics:
+        condition: service_healthy
+
+volumes:
+  redis-data:
+  clickhouse-data:
