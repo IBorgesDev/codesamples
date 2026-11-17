@@ -4,8 +4,43 @@ export type Fetch = typeof fetch;
 
 export type QueryParams = Record<string, string | number>;
 
+export type Fields = Record<string, unknown>;
+
+export type Query<Row> = {
+  sql: string;
+  row: (record: Fields) => Row;
+};
+
+export type RowOf<Q> = Q extends Query<infer Row> ? Row : never;
+
 export interface QueryRunner {
-  query<T>(sql: string, params: QueryParams): Promise<T[]>;
+  run<Row>(query: Query<Row>, params: QueryParams): Promise<Row[]>;
+}
+
+export function query<Row>(sql: string, row: (record: Fields) => Row): Query<Row> {
+  return { sql, row };
+}
+
+export function number(value: unknown): number {
+  const parsed = typeof value === "string" ? Number(value) : value;
+  if (typeof parsed !== "number" || !Number.isFinite(parsed)) {
+    throw new TypeError(`expected a number, got ${String(value)}`);
+  }
+
+  return parsed;
+}
+
+export function numberOrNull(value: unknown): number | null {
+  const parsed = typeof value === "string" ? Number(value) : value;
+  return typeof parsed === "number" && Number.isFinite(parsed) ? parsed : null;
+}
+
+export function text(value: unknown): string {
+  if (typeof value !== "string") {
+    throw new TypeError(`expected a string, got ${String(value)}`);
+  }
+
+  return value;
 }
 
 export class ClickHouseError extends Error {
@@ -35,14 +70,14 @@ export class ClickHouse implements QueryRunner {
     await this.send(params, rows.map((row) => JSON.stringify(row)).join("\n"));
   }
 
-  async query<T>(sql: string, params: QueryParams): Promise<T[]> {
-    const search = new URLSearchParams({ output_format_json_quote_64bit_integers: "0" });
+  async run<Row>(definition: Query<Row>, params: QueryParams): Promise<Row[]> {
+    const search = new URLSearchParams({ default_format: "JSON", output_format_json_quote_64bit_integers: "0" });
     for (const [name, value] of Object.entries(params)) {
       search.set(`param_${name}`, String(value));
     }
 
-    const text = await this.send(search, sql);
-    return (JSON.parse(text) as { data: T[] }).data;
+    const body = JSON.parse(await this.send(search, definition.sql)) as { data: Fields[] };
+    return body.data.map(definition.row);
   }
 
   async execute(sql: string): Promise<void> {
