@@ -76,7 +76,17 @@ crashes, lost messages and retries, at the largest Roblox peaks (25.8M CCU, abou
 - **Measured in Studio** on the real MemoryStore, MessagingService and DataStore: 10 of 10
   cross-server trades committed, settlement p50 4.67 s (1.7 s more than on one server), hints
   delivered in about 0.2 s, gifts credited in about 1.3 s, everything conserved
-  ([invariants](invariants.md#across-servers-and-gifts)).
+  ([invariants](invariants.md#across-servers-and-gifts)). Re-run on 2026-11-17: 20 of 20
+  cross-server trades committed (settlement p50 4.27 s, hints p50 0.2 s), 20 trades on one server
+  (p50 2.25 s), 20 gifts (p50 1.32 s), and `StressTest` (6 trades at once, one item in two trades,
+  4 cross-server trades with 3 servers racing for one lock, 12 gifts each sent twice) conserved
+  every item and coin.
+- **Ceiling.** At the same load the design fits up to 52.6M CCU with 4 or 8 players per server
+  (`trade_capacity.spec` searches it). The first limit is the busiest of the 256 coordinator maps
+  reaching 300,000 RU/min (half of 20 partitions × 30,000). At 5% of players per minute the ceiling
+  is 12.2M. `coordinator_maps` moves it linearly (1,024 maps: ~210M), but every server must use the
+  same count, since a key's map is its hash modulo the count: change it with a migration to the
+  latest version, not a rolling update.
 - **Clock.** The countdown uses wall clock (`DateTime.now()`) compared across servers. A few seconds
   of skew only shifts when the lock happens.
 - **ProfileStore's message queue holds 1,000 messages.** Beyond that it drops the oldest

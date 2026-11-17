@@ -104,3 +104,15 @@ such.
   with `AnalyticsDemo` sent a batch about every 10 s, and ClickHouse stored all 36 events of its 10
   batches with the real place and user ids, none rejected, with `session_end` arriving when the
   playtest stopped.
+- **Ceilings, measured one stage at a time** on the same VM (`mise run stress`, k6 on the same 6
+  CPUs). The ingest alone (worker stopped, backlog limit raised): ~1,850 batches/s of 40 events
+  (~74,000 events/s) per instance at p95 39 ms, p99 122 ms; past ~2,500/s p99 goes over 250 ms.
+  Redis spends ~80 µs per batch (the append script plus the worker's read and ack, from
+  `commandstats`), ~6,000 batches/s per stream shard with 50% headroom. One worker drained a
+  166,626-batch backlog into ClickHouse at ~200,000 rows/s (peak 241,600), and the row count
+  matched the accepted events exactly (6,710,000).
+- **What a peak needs**, from those numbers and one batch per server every 10 s: 7.56M CCU at 8
+  per server is ~95,000 batches/s, so ~52 ingest instances and 16 stream shards; 25.8M is ~175
+  instances and 52 shards. ClickHouse depends on how much the game tracks: at one event per player
+  every 10 s, 25.8M CCU is ~2.6M rows/s, ~13 worker and ClickHouse node pairs. Every stage scales
+  by adding instances or shards (`ANALYTICS_STREAM_SHARDS`); none has a single-key limit.

@@ -31,7 +31,7 @@ To store events: `mise run up` starts Redis, ClickHouse, the ingest and the work
 `mise run tunnel` gives the ingest a public URL, and the Local Secrets `analytics_url` and
 `analytics_token` (`ANALYTICS_SERVER_TOKEN` from `infra/.env`) point the game at it. Without them the
 SDK counts events and discards them.
-`mise run test-service` and `mise run load` test the service.
+`mise run test-service`, `mise run load` and `mise run stress` test the service.
 
 ## Studio test hooks
 
@@ -51,5 +51,5 @@ Attributes on `ServerScriptService`:
 | `schema/` | The event contract shared by the game and the service |
 | `service/` | Ingest, ClickHouse worker and stats API (TypeScript) |
 | `clickhouse/` | Tables and the per-minute view |
-| `tests/`, `load/`, `infra/` | SDK specs, the k6 load test and the Docker setup |
+| `tests/`, `load/`, `infra/` | SDK specs, the k6 load and stress tests and the Docker setup |
 | `docs/` | Design and the Roblox limits it relies on |

@@ -31,7 +31,7 @@ Services** (Experience Settings → Security). Every playtest runs the specs fir
 
 For the Redis backend: `mise run up` starts Redis and the service with Docker, `mise run tunnel` gives
 it a public URL, and the Local Secrets `events_url` and `events_token` (`EVENTS_SERVER_TOKEN` from
-`infra/.env`) point the game at it. `mise run test-service` and `mise run load` test the service.
+`infra/.env`) point the game at it. `mise run test-service`, `mise run load` and `mise run stress` test the service.
 
 ## Studio test hooks
 
@@ -53,5 +53,5 @@ Attributes on `ServerScriptService`:
 | `src/shared/` | Remotes, config and the event catalog |
 | `src/client/` | The progress and vote panel |
 | `tests/` | Specs, including a 300-server simulation with crashes |
-| `service/`, `load/`, `infra/` | The Redis service (TypeScript), its k6 load test and Docker setup |
+| `service/`, `load/`, `infra/` | The Redis service (TypeScript), its k6 load and stress tests and Docker setup |
 | `docs/` | Design, numbers and the Roblox limits they rely on |

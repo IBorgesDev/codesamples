@@ -59,6 +59,15 @@ servers publishing their total every ~2 s for 2 minutes sent 119,388 requests (9
 p50 15.6 ms, p95 27.4 ms, p99 82.4 ms, with no failed request. The stored total matched the fish
 the servers had acknowledged exactly (2,323,844). All 17 service tests pass against real Redis.
 
+`mise run stress` (constant arrival rate, same VM, k6 included) finds the ceiling of one instance:
+12,000 publishes/s at p99 66.6 ms with the instance at ~60% of a core; past ~13,000/s the Node
+process saturates and p99 goes over 250 ms. Every step stayed exact and none failed. The limit at
+scale is Redis, not the API: the publish script costs 11.4 µs of Redis CPU per entry (Redis
+`commandstats` over 2.4M publishes), and every key of one event shares a hash tag, so one event
+lives on one Redis core: ~44,000 publishes/s with 50% headroom, which is ~131,000 servers
+flushing every ~3 s, ~1M CCU at 8 players per server, for one event. Above that the HTTP backend
+needs the event split across Redis nodes by server, as the MemoryStore backend does with shards.
+
 End to end, a Studio playtest on the HTTP backend (`LiveEventBackend = "http"`, the service behind
 `mise run tunnel`) is what found the `[]` case: every publish got a 400 while the game kept showing
 its archived total plus its own fish, so players saw nothing wrong. With the fix the server's fish
@@ -72,6 +81,13 @@ reached the service within one flush and the game showed the service's total eve
 | Saturday peak of a group of games (7.56M) | 945,568 | 37,823 / 148 | 7.2% | 6.5 s / 14.4 s / 28 s |
 | Single-game peak (14.3M) | 1,786,691 | 71,468 / 280 | 6.4% | 6.5 s / 14.6 s / 35 s |
 | Largest single-game peak (25.8M) | 3,229,528 | 129,182 / 505 | 6.0% | 6.5 s / 14.9 s / 46 s |
+
+The same spec searches the largest CCU that still fits every limit: ~5.73M servers, so 22.9M CCU
+at 4 players per server, 45.9M at 8 and 114.7M at 20. The first limit is always the root pass:
+the root leader reads every group's partial, 32 at a time, and past ~1,010 groups that takes over
+the 2 s pass interval. RU, keys, memory and MessagingService still have room there. The check is
+stricter than the service needs (passes run one after another and the root lease lasts 10 s), so
+past the ceiling totals get slower before anything breaks.
 
 Simpler designs break much earlier (same spec): every server broadcasting its count ~64 CCU, every
 server contesting one leader key ~664 CCU, one counter key ~2,000 CCU, one total key read by
@@ -111,7 +127,8 @@ that includes a leader failover, zero throttled calls.
 own backoff gate, with a leader running group and root passes every 3 s. Two runs ended with the
 stored total exactly equal to the fish caught (287 and 267), 12 live servers counted, and no call
 throttled inside Studio's 1,000 RU/min quota. During the run the total trailed by 12 to 20 fish,
-one flush interval of contributions.
+one flush interval of contributions. A re-run on 2026-11-17 ended exact again (250 of 250) through
+three transient `InternalError`s on the root `HashMap.Set`.
 
 ## Players and durability
 

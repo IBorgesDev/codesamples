@@ -44,3 +44,7 @@ run = "docker compose -f infra/docker-compose.yml --env-file infra/.env --profil
 [tasks.tunnel]
 description = "Public HTTPS URL for the events service, so a Studio playtest can reach it"
 run = "docker compose -f infra/docker-compose.yml --env-file infra/.env --profile tunnel up tunnel"
+
+[tasks.stress]
+description = "Publish rate one events instance sustains (RATE publishes/s, DURATION, EVENTS per publish)"
+run = "docker compose -f infra/docker-compose.yml --env-file infra/.env --profile load run --rm -e RATE -e DURATION -e EVENTS -e VUS k6 /scripts/stress.js"

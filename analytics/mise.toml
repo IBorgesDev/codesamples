@@ -41,6 +41,10 @@ run = "npx vitest run"
 description = "k6 load test against the ingest: gzip batches from simulated servers (SERVERS, FLUSH_SECONDS, EVENTS_PER_FLUSH, DURATION)"
 run = "docker compose -f infra/docker-compose.yml --env-file infra/.env --profile load run --rm k6"
 
+[tasks.stress]
+description = "Batch rate one ingest instance sustains (RATE batches/s, DURATION, EVENTS_PER_FLUSH)"
+run = "docker compose -f infra/docker-compose.yml --env-file infra/.env --profile load run --rm -e RATE -e DURATION -e EVENTS_PER_FLUSH -e VUS k6 /scripts/stress.js"
+
 [tasks.tunnel]
 description = "Public HTTPS URL for the ingest, so a Studio playtest can reach it"
 run = "docker compose -f infra/docker-compose.yml --env-file infra/.env --profile tunnel up tunnel"

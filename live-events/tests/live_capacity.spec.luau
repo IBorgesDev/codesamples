@@ -22,6 +22,14 @@ return function()
             options = 1,
         },
         {
+            name = "1.13M CCU, a portfolio's live total at 7 per server",
+            ccu = 1_127_077,
+            players_per_server = 7,
+            churn = 1.5,
+            events = 2,
+            options = 3,
+        },
+        {
             name = "7.56M CCU, Saturday peak of a group of games",
             ccu = 7_564_537,
             players_per_server = 8,
@@ -47,6 +55,9 @@ return function()
         },
     }
     const MEGABYTE = 1024 * 1024
+    const CEILING_FLOORS = { [4] = 7_564_537, [8] = 25_836_222, [20] = 25_836_222 }
+    const CEILING_STEP = 10_000
+    const CEILING_MAX = 1_000_000_000
 
     local function round(value, digits)
         local scale = 10 ^ (digits or 0)
@@ -79,8 +90,42 @@ return function()
             end)
         end
 
+        it("finds the largest CCU the design fits for each server size", function()
+            for size, floor in CEILING_FLOORS do
+                local function plan_at(ccu)
+                    return planner.plan({
+                        name = "ceiling",
+                        ccu = ccu,
+                        players_per_server = size,
+                        churn = 1.5,
+                        events = 2,
+                        options = 3,
+                    })
+                end
+
+                local low, high = CEILING_STEP, CEILING_MAX
+                while high - low > CEILING_STEP do
+                    local middle = math.floor((low + high) / 2)
+                    if #planner.check(plan_at(middle)) == 0 then
+                        low = middle
+                    else
+                        high = middle
+                    end
+                end
+
+                print(
+                    `[capacity] ceiling at {size} players per server: {round(low / 1e6, 2)}M CCU, `
+                        .. `{math.ceil(low / size)} servers, first limit: {table.concat(
+                            planner.check(plan_at(high)),
+                            "; "
+                        )}`
+                )
+                expect(low >= floor).to.equal(true)
+            end
+        end)
+
         it("each simpler design breaks below a tenth of a 14.3M CCU peak", function()
-            local scenario = SCENARIOS[5]
+            local scenario = SCENARIOS[6]
             for _, point in planner.breakpoints(scenario) do
                 print(`[capacity] naive: {point.design} breaks at ~{point.max_servers} servers (~{point.max_ccu} CCU)`)
                 expect(point.max_ccu < scenario.ccu / 10).to.equal(true)
