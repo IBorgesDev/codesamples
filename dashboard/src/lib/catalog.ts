@@ -1,3 +1,5 @@
+import type { LiveEvent } from "./types";
+
 export type CatalogEntry = {
   id: string;
   title: string;
@@ -22,6 +24,21 @@ export const LIVE_EVENTS: CatalogEntry[] = [
     goal: null,
   },
 ];
+
+export function liveEventFrom(
+  entry: CatalogEntry,
+  servers: number,
+  valueOf: (optionId: string, index: number) => number,
+): LiveEvent {
+  return {
+    id: entry.id,
+    title: entry.title,
+    kind: entry.kind,
+    goal: entry.goal,
+    servers,
+    options: Object.entries(entry.labels).map(([id, label], index) => ({ id, label, value: valueOf(id, index) })),
+  };
+}
 
 export const EVENT_LABELS: Record<string, string> = {
   session_start: "Sessions started",

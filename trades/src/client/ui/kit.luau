@@ -13,7 +13,6 @@ local theme = table.freeze({
     INK_2 = Color3.fromRGB(195, 194, 183),
     MUTED = Color3.fromRGB(137, 135, 129),
     ACCENT = Color3.fromRGB(57, 135, 229),
-    TRACK = Color3.fromRGB(24, 79, 149),
     GOOD = Color3.fromRGB(12, 163, 12),
     DANGER = Color3.fromRGB(208, 59, 59),
     CORNER = UDim.new(0, 10),
@@ -31,7 +30,6 @@ local theme = table.freeze({
     TITLE_HEIGHT = 26,
     LINE_HEIGHT = 20,
     CAPTION_HEIGHT = 18,
-    METER_HEIGHT = 8,
 })
 
 local kit = {}
@@ -82,7 +80,36 @@ function kit.text(props: { [string]: any }): TextLabel
     )
 end
 
-function kit.button(label: string, color: Color3, width: number, on_click: () -> ()): TextButton
+function kit.title(order: number, parent: Instance): TextLabel
+    return kit.text({
+        Text = "",
+        FontFace = theme.FONT_BOLD,
+        TextSize = theme.TITLE_SIZE,
+        Size = UDim2.new(1, 0, 0, theme.TITLE_HEIGHT),
+        LayoutOrder = order,
+        Parent = parent,
+    })
+end
+
+function kit.caption(text: string, order: number, parent: Instance): TextLabel
+    return kit.text({
+        Text = text,
+        TextColor3 = theme.MUTED,
+        TextSize = theme.SMALL_SIZE,
+        Size = UDim2.new(1, 0, 0, theme.CAPTION_HEIGHT),
+        LayoutOrder = order,
+        Parent = parent,
+    })
+end
+
+function kit.button(
+    label: string,
+    color: Color3,
+    width: number,
+    on_click: () -> (),
+    parent: Instance?,
+    order: number?
+): TextButton
     local instance = create("TextButton", {
         Name = label,
         Size = UDim2.fromOffset(width, theme.BUTTON_HEIGHT),
@@ -92,6 +119,8 @@ function kit.button(label: string, color: Color3, width: number, on_click: () ->
         Text = label,
         TextColor3 = theme.INK,
         TextSize = theme.BODY_SIZE,
+        LayoutOrder = order or 0,
+        Parent = parent,
     }, { kit.corner(theme.SMALL_CORNER) })
     instance.Activated:Connect(on_click)
 
@@ -181,22 +210,6 @@ function kit.footer(order: number, parent: Instance): (Frame, Frame, Frame)
     })
 
     return row, left, right
-end
-
-function kit.meter(order: number, parent: Instance): Frame
-    local track = create("Frame", {
-        Size = UDim2.new(1, 0, 0, theme.METER_HEIGHT),
-        BackgroundColor3 = theme.TRACK,
-        LayoutOrder = order,
-        Parent = parent,
-    }, { kit.corner(UDim.new(1, 0)) })
-
-    return create("Frame", {
-        Name = "Fill",
-        Size = UDim2.fromScale(0, 1),
-        BackgroundColor3 = theme.ACCENT,
-        Parent = track,
-    }, { kit.corner(UDim.new(1, 0)) })
 end
 
 function kit.refill(container: Instance, children: { Instance })

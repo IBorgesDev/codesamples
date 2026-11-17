@@ -1,11 +1,10 @@
 --!strict
 
-local replicated_storage = game:GetService("ReplicatedStorage")
 local run_service = game:GetService("RunService")
 local server_script_service = game:GetService("ServerScriptService")
 
 local live = require(script.Parent.Parent.live_event.service)
-local trace = require(replicated_storage.Shared.util.trace)
+local trace = require(script.Parent.Parent.util.trace)
 
 const ATTRIBUTE = "LiveEventDemo"
 const TICK = 1

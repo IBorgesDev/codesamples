@@ -1,8 +1,8 @@
 --!strict
 
-local buffer = require(script.Parent.buffer)
+local outbox = require(script.Parent.outbox)
 
-const MAX_SAFE_INTEGER = 2 ^ 53
+const MAX_SAFE_INTEGER = 2 ^ 53 - 1
 
 export type Definition = {
     props: { [string]: string },
@@ -13,10 +13,8 @@ export type Schema = {
     version: number,
     limits: {
         string_bytes: number,
-        server_id_bytes: number,
         session_id_bytes: number,
         batch_events: number,
-        batch_bytes: number,
         max_weight: number,
     },
     events: { [string]: Definition },
@@ -25,7 +23,7 @@ export type Schema = {
 local validate = {}
 
 local function finite(value: any): boolean
-    return type(value) == "number" and value == value and value ~= math.huge and value ~= -math.huge
+    return type(value) == "number" and value == value and math.abs(value) ~= math.huge
 end
 
 local function integer(value: any): boolean
@@ -52,7 +50,7 @@ local function matches(kind: string, value: any, schema: Schema): boolean
     return false
 end
 
-function validate.event(schema: Schema, event: buffer.Event): (boolean, string?)
+function validate.event(schema: Schema, event: outbox.Event): (boolean, string?)
     local definition = schema.events[event.name]
     if definition == nil then
         return false, "unknown_event"
@@ -99,10 +97,10 @@ function validate.event(schema: Schema, event: buffer.Event): (boolean, string?)
     return true, nil
 end
 
-function validate.weight(definition: Definition?): number
+function validate.sample(definition: Definition?): number?
     local sample = if definition then definition.sample else nil
 
-    return if sample and sample > 0 then math.round(1 / sample) else 1
+    return if sample and sample > 0 and sample < 1 then sample else nil
 end
 
 return validate

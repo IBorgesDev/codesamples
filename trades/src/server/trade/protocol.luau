@@ -116,7 +116,7 @@ function protocol.prepare(ports: Ports, account: Account, tx_id: string): (Outco
     end
 
     if not account.active() then
-        return "pending", "inactive"
+        return abort(ports, account, tx_id, "b_left"), "b_left"
     end
 
     local side = record.b
@@ -166,6 +166,30 @@ function protocol.finalize(ports: Ports, account: Account, tx_id: string): Outco
     end
 
     return "open"
+end
+
+function protocol.decided(outcome: string?): boolean
+    return outcome == "committed" or outcome == "aborted" or outcome == "refused"
+end
+
+function protocol.run(
+    ports: Ports,
+    a: Account,
+    b: Account,
+    tx_id: string,
+    a_side: Side,
+    b_side: Side,
+    offer_version: number
+): (Outcome, string?)
+    local opened: Outcome, why: string? = protocol.open(ports, a, tx_id, a_side, b_side, offer_version)
+    if opened == "open" then
+        opened, why = protocol.prepare(ports, b, tx_id)
+        if protocol.decided(opened) then
+            protocol.finalize(ports, a, tx_id)
+        end
+    end
+
+    return opened, why
 end
 
 function protocol.recover(ports: Ports, account: Account)

@@ -2,13 +2,12 @@
 
 local data_store_service = game:GetService("DataStoreService")
 local players = game:GetService("Players")
-local replicated_storage = game:GetService("ReplicatedStorage")
-local run_service = game:GetService("RunService")
 local server_script_service = game:GetService("ServerScriptService")
 
 local profile_store = require(server_script_service.ServerPackages.ProfileStore)
-local trace = require(replicated_storage.Shared.util.trace)
-local tuning = require(replicated_storage.Shared.config.tuning)
+local store_name = require(script.Parent.store_name)
+local trace = require(script.Parent.Parent.util.trace)
+local tuning = require(script.Parent.Parent.config.tuning)
 local types = require(script.Parent.Parent.trade.types)
 
 const CONFIG = tuning.profiles
@@ -31,11 +30,11 @@ local template: types.Data = {
     gift_seen = {},
     outbox = {},
 }
-local store_name = if run_service:IsStudio() then CONFIG.store_name .. CONFIG.studio_suffix else CONFIG.store_name
-local store = profile_store.New(store_name, template)
-local raw_store = data_store_service:GetDataStore(store_name)
+local store = profile_store.New(store_name(CONFIG.store_name), template)
+local raw_store = data_store_service:GetDataStore(store_name(CONFIG.store_name))
 local loaded: { [Player]: Loaded } = {}
 local known: { [number]: boolean } = {}
+local known_count = 0
 local listeners: { (Player, Loaded) -> () } = {}
 
 function profiles.account(user_id: number, profile: any): types.Account
@@ -112,11 +111,19 @@ function profiles.exists(user_id: number): boolean?
         return nil
     end
 
-    if value ~= nil then
-        known[user_id] = true
+    if value == nil then
+        return false
     end
 
-    return value ~= nil
+    if known_count >= tuning.gift.known_recipients then
+        table.clear(known)
+        known_count = 0
+    end
+
+    known[user_id] = true
+    known_count += 1
+
+    return true
 end
 
 function profiles.get(player: Player): Loaded?

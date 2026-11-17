@@ -1,24 +1,19 @@
+import type { CatalogEntry } from "./catalog";
+
 export type Point = { minute: number; value: number };
 
 export type ActivityRow = { minute: number } & Record<string, number>;
 
 export type Outcome = "committed" | "aborted" | "pending";
 
-export type LiveEvent = {
-  id: string;
-  title: string;
-  kind: "counter" | "vote";
+export type LiveEvent = Pick<CatalogEntry, "id" | "title" | "kind" | "goal"> & {
   options: { id: string; label: string; value: number }[];
-  goal: { option: string; target: number } | null;
-  state: string;
   servers: number;
 };
 
 export type DashboardData = {
   source: "live" | "demo";
   problems: string[];
-  generatedAt: number;
-  rangeMinutes: number;
   players: Point[];
   activity: { names: string[]; rows: ActivityRow[] };
   trades: {
@@ -33,3 +28,5 @@ export type DashboardData = {
 export const RANGES = [15, 60, 360, 1440] as const;
 
 export type Range = (typeof RANGES)[number];
+
+export const DEFAULT_RANGE: Range = 60;

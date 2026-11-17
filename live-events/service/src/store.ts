@@ -35,7 +35,7 @@ export type StoreOptions = {
   closeGraceSeconds: number;
   shards: number;
   refreshMs: number;
-  activeWindowSeconds?: number;
+  activeWindowSeconds: number;
   clock?: () => number;
 };
 
@@ -71,7 +71,7 @@ function script(redis: RedisClient, lua: string): Runner {
   };
 }
 
-export function shardOf(server: string, shards: number): number {
+function shardOf(server: string, shards: number): number {
   let hash = FNV_OFFSET;
   for (const byte of Buffer.from(server, "utf8")) {
     hash = Math.imul(hash ^ byte, FNV_PRIME);
@@ -85,13 +85,17 @@ function eventKeys(id: string) {
   return { meta: `${tag}:meta`, options: `${tag}:options` };
 }
 
-export function shardKeys(id: string, shard: number): string[] {
+function shardKeys(id: string, shard: number): string[] {
   const tag = `ev:{${id}:${shard}}`;
   return [`${tag}:entries`, `${tag}:totals`, `${tag}:seen`, `${tag}:version`];
 }
 
+export function emptyTally(): Tally {
+  return Object.create(null) as Tally;
+}
+
 function tally(flat: unknown): Tally {
-  const out: Tally = {};
+  const out = emptyTally();
   const list = Array.isArray(flat) ? flat : [];
   for (let i = 0; i + 1 < list.length; i += 2) {
     out[String(list[i])] = Number(list[i + 1]);
@@ -111,6 +115,35 @@ function optionalNumber(value: unknown): number | null {
 function shardResult(raw: unknown, at: number): ShardResult {
   const [version, active, ignored, totals] = Array.isArray(raw) ? raw : [];
   return { version: Number(version ?? 0), active: Number(active ?? 0), ignored: Number(ignored ?? 0), totals: tally(totals), at };
+}
+
+function groupByShard(servers: Map<string, Contribution>, shards: number): Map<number, Map<string, Contribution>> {
+  const byShard = new Map<number, Map<string, Contribution>>();
+  for (const [server, contribution] of servers) {
+    const shard = shardOf(server, shards);
+    const group = byShard.get(shard) ?? new Map<string, Contribution>();
+    group.set(server, contribution);
+    byShard.set(shard, group);
+  }
+
+  return byShard;
+}
+
+function sumShards(results: ShardResult[]): Pick<Snapshot, "version" | "totals" | "servers" | "ignored"> {
+  const totals = emptyTally();
+  let version = 0;
+  let servers = 0;
+  let ignored = 0;
+  for (const result of results) {
+    version += result.version;
+    servers += result.active;
+    ignored += result.ignored;
+    for (const [option, value] of Object.entries(result.totals)) {
+      totals[option] = (totals[option] ?? 0) + value;
+    }
+  }
+
+  return { version, totals, servers, ignored };
 }
 
 export class EventStore {
@@ -136,7 +169,7 @@ export class EventStore {
     this.closeGraceSeconds = options.closeGraceSeconds;
     this.shards = options.shards;
     this.refreshMs = options.refreshMs;
-    this.activeWindowSeconds = options.activeWindowSeconds ?? 30;
+    this.activeWindowSeconds = options.activeWindowSeconds;
     this.clock = options.clock ?? Date.now;
   }
 
@@ -157,23 +190,25 @@ export class EventStore {
     return existing === encoded ? "exists" : "conflict";
   }
 
-  async publish(server: string, events: Record<string, Contribution>, now: number): Promise<Record<string, Snapshot | null>> {
+  publish(server: string, events: Record<string, Contribution>, now: number): Promise<Map<string, Snapshot | null>> {
     const batch: Batch = new Map();
     for (const [id, contribution] of Object.entries(events)) {
       batch.set(id, new Map([[server, contribution]]));
     }
 
-    return Object.fromEntries(await this.publishBatch(batch, now));
+    return this.publishBatch(batch, now);
   }
 
   async publishBatch(batch: Batch, now: number): Promise<Map<string, Snapshot | null>> {
-    const ids = [...batch.keys()];
-    const snapshots = await Promise.all(ids.map((id) => this.publishEvent(id, batch.get(id) as Map<string, Contribution>, now, false)));
-    return new Map(ids.map((id, index) => [id, snapshots[index] ?? null]));
+    const settled = await Promise.all(
+      [...batch].map(async ([id, servers]) => [id, await this.settle(id, servers, now, false)] as const),
+    );
+
+    return new Map(settled);
   }
 
-  async read(id: string, now: number): Promise<Snapshot | null> {
-    return this.publishEvent(id, new Map(), now, true);
+  read(id: string, now: number): Promise<Snapshot | null> {
+    return this.settle(id, new Map(), now, true);
   }
 
   private async view(id: string, fresh: boolean): Promise<View | null> {
@@ -203,7 +238,7 @@ export class EventStore {
     return view;
   }
 
-  private async publishEvent(id: string, servers: Map<string, Contribution>, now: number, fresh: boolean): Promise<Snapshot | null> {
+  private async settle(id: string, servers: Map<string, Contribution>, now: number, fresh: boolean): Promise<Snapshot | null> {
     const view = await this.view(id, fresh);
     if (!view) {
       return null;
@@ -211,27 +246,31 @@ export class EventStore {
 
     const closed = view.endsAt !== null && now >= view.endsAt + this.closeGraceSeconds;
     const exact = fresh || (!closed && view.state === "live" && view.goal !== null);
-    const byShard = new Map<number, Map<string, Contribution>>();
-    for (const [server, contribution] of servers) {
-      const shard = shardOf(server, view.shards);
-      const group = byShard.get(shard) ?? new Map<string, Contribution>();
-      group.set(server, contribution);
-      byShard.set(shard, group);
+    const results = await this.shardResults(id, view, groupByShard(servers, view.shards), now, closed, exact);
+    const sum = sumShards(results);
+    if (!closed && view.state === "live" && view.goal && (sum.totals[view.goal.option] ?? 0) >= view.goal.target) {
+      await this.complete(id, view, now);
     }
 
-    let cache = this.shardCache.get(id);
-    if (!cache) {
-      cache = [];
-      this.shardCache.set(id, cache);
-    }
+    return { state: closed ? "closed" : view.state, completedAt: view.completedAt, endsAt: view.endsAt, ...sum };
+  }
 
+  private async shardResults(
+    id: string,
+    view: View,
+    byShard: Map<number, Map<string, Contribution>>,
+    now: number,
+    closed: boolean,
+    exact: boolean,
+  ): Promise<ShardResult[]> {
+    const cache = this.shardCache.get(id) ?? [];
+    this.shardCache.set(id, cache);
     const at = this.clock();
     const results = await Promise.all(
       Array.from({ length: view.shards }, async (_, shard) => {
         const group = byShard.get(shard);
         if (group) {
-          const raw = await this.runPublish(shardKeys(id, shard), this.publishArgs(view, group, now, closed));
-          return shardResult(raw, at);
+          return shardResult(await this.runPublish(shardKeys(id, shard), this.publishArgs(view, group, now, closed)), at);
         }
 
         const known = cache[shard];
@@ -243,41 +282,33 @@ export class EventStore {
       }),
     );
 
-    const totals: Tally = {};
-    let version = 0;
-    let active = 0;
-    let ignored = 0;
     results.forEach((result, shard) => {
       cache[shard] = result;
-      version += result.version;
-      active += result.active;
-      ignored += result.ignored;
-      for (const [option, value] of Object.entries(result.totals)) {
-        totals[option] = (totals[option] ?? 0) + value;
-      }
     });
 
-    if (!closed && view.state === "live" && view.goal && (totals[view.goal.option] ?? 0) >= view.goal.target) {
-      const [state, completedAt] = (await this.runComplete([eventKeys(id).meta], [now])) as [string, string];
-      if (state === "completed") {
-        view.state = "completed";
-        view.completedAt = optionalNumber(completedAt);
-      }
-    }
+    return results;
+  }
 
-    return {
-      state: closed ? "closed" : view.state,
-      version,
-      totals,
-      completedAt: view.completedAt,
-      endsAt: view.endsAt,
-      servers: active,
-      ignored,
-    };
+  private async complete(id: string, view: View, now: number): Promise<void> {
+    const reply = await this.runComplete([eventKeys(id).meta], [now]);
+    const [state, completedAt] = Array.isArray(reply) ? reply : [];
+    if (state === "completed") {
+      view.state = "completed";
+      view.completedAt = optionalNumber(completedAt);
+    }
   }
 
   private publishArgs(view: View, servers: Map<string, Contribution>, now: number, closed: boolean): (string | number)[] {
-    const args: (string | number)[] = [now, this.activeWindowSeconds, closed ? 1 : 0, view.options.length, ...view.options, servers.size];
+    const largestShardTotal = Math.floor(Number.MAX_SAFE_INTEGER / view.shards);
+    const args: (string | number)[] = [
+      now,
+      this.activeWindowSeconds,
+      closed ? 1 : 0,
+      largestShardTotal,
+      view.options.length,
+      ...view.options,
+      servers.size,
+    ];
     for (const [server, contribution] of servers) {
       const plus = Object.entries(contribution.plus);
       const minus = Object.entries(contribution.minus);

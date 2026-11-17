@@ -3,26 +3,27 @@
 local http_service = game:GetService("HttpService")
 local players = game:GetService("Players")
 local replicated_storage = game:GetService("ReplicatedStorage")
-local run_service = game:GetService("RunService")
 
 local coordinator = require(script.Parent.coordinator)
 local cross_service = require(script.Parent.cross_service)
+local every = require(script.Parent.Parent.util.every)
 local gift_service = require(script.Parent.gift_service)
 local guard = require(script.Parent.Parent.net.guard)
 local inventory = require(script.Parent.inventory)
+local invites = require(script.Parent.invites)
 local negotiation = require(script.Parent.negotiation)
 local net = require(replicated_storage.Shared.net)
 local profiles = require(script.Parent.Parent.data.profiles)
 local protocol = require(script.Parent.protocol)
 local records = require(script.Parent.records)
-local stats = require(script.Parent.Parent.dev.stats)
-local trace = require(replicated_storage.Shared.util.trace)
-local tuning = require(replicated_storage.Shared.config.tuning)
+local stat = require(script.Parent.Parent.dev.stats)
+local store_name = require(script.Parent.Parent.data.store_name)
+local trace = require(script.Parent.Parent.util.trace)
+local tuning = require(script.Parent.Parent.config.tuning)
 local types = require(script.Parent.types)
 local view = require(script.Parent.view)
 
 const CONFIG = tuning.trade
-const MAX_USER_ID = 2 ^ 53
 const MAX_VERSION = 2 ^ 31
 
 type Status = view.Status
@@ -37,29 +38,16 @@ type Trade = {
     closes_at: number?,
 }
 
-export type Event = {
-    kind: string,
-    tx_id: string?,
-    reason: string?,
-    seconds: number,
-    players: { Player },
-    cross: boolean,
-}
-
 local trade = {}
 
 local active: { [Player]: Trade } = {}
-local invites: { [Player]: { [number]: { from: Player, at: number } } } = {}
+local open_trades: { [Trade]: boolean } = {}
 local last_invite: { [Player]: number } = {}
-local listeners: { (Event) -> () } = {}
-
-local store_name = if run_service:IsStudio()
-    then CONFIG.store_name .. tuning.profiles.studio_suffix
-    else CONFIG.store_name
-local record_store = records.open(store_name)
+local pending_invites: invites.Book<Player> = invites.book(CONFIG.max_invites, CONFIG.invite_timeout)
+local lock_limiter = guard.limiter(CONFIG.lock_pace)
 
 local ports: types.Ports = {
-    records = record_store,
+    records = records.open(store_name(CONFIG.store_name)),
     now = function()
         return os.time()
     end,
@@ -72,22 +60,12 @@ function trade.ports(): types.Ports
     return ports
 end
 
-function trade.on_event(listener: (Event) -> ())
-    table.insert(listeners, listener)
-end
-
-local function emit(event: Event)
-    for _, listener in listeners do
-        task.spawn(listener, event)
-    end
-end
-
 local function push(entry: Trade)
     for _, player in { entry.a, entry.b } do
         if player.Parent == players then
             net.trade.view:set(
                 player,
-                view.of(entry.id, entry.status, entry.reason, entry.session, player.UserId, os.clock())
+                view.of(entry.id, entry.status, entry.reason, entry.session, player.UserId, os.clock(), math.huge)
             )
         end
     end
@@ -104,64 +82,49 @@ local function finish(entry: Trade, status: Status, reason: string?)
     push(entry)
 end
 
-local function side(player: Player, party: negotiation.Party): types.Side
-    return { user_id = player.UserId, coins = party.coins, items = party.items, ready = false }
+local function settle(entry: Trade): (string, string?)
+    local a, b = profiles.get(entry.a), profiles.get(entry.b)
+    if a == nil or b == nil then
+        return "aborted", "left"
+    end
+
+    if
+        records.budget() < CONFIG.min_update_budget or not (lock_limiter:take(entry.a) and lock_limiter:take(entry.b))
+    then
+        return "aborted", "busy"
+    end
+
+    local tx_id = http_service:GenerateGUID(false)
+    local started = os.clock()
+    local session = entry.session
+    local outcome, why = protocol.run(
+        ports,
+        a.account,
+        b.account,
+        tx_id,
+        negotiation.side(session.a),
+        negotiation.side(session.b),
+        session.version
+    )
+    local seconds = os.clock() - started
+    stat("trade.last_seconds", math.round(seconds * 1000) / 1000)
+    trace("trade", `{tx_id} {outcome} {why or ""} in {math.round(seconds * 1000)} ms`)
+
+    return outcome, why
 end
 
 local function execute(entry: Trade)
     entry.status = "locking"
     push(entry)
 
-    local a, b = profiles.get(entry.a), profiles.get(entry.b)
-    if a == nil or b == nil then
-        finish(entry, "aborted", "left")
-        return
-    end
-
-    if records.budget() < CONFIG.min_update_budget then
-        finish(entry, "aborted", "busy")
-        return
-    end
-
-    local tx_id = http_service:GenerateGUID(false)
-    local started = os.clock()
-    local opened, why = protocol.open(
-        ports,
-        a.account,
-        tx_id,
-        side(entry.a, entry.session.a),
-        side(entry.b, entry.session.b),
-        entry.session.version
-    )
-
-    local outcome: string = opened
-    if opened == "open" then
-        local prepared, prepared_why = protocol.prepare(ports, b.account, tx_id)
-        outcome = prepared
-        why = prepared_why
-        if prepared == "committed" or prepared == "aborted" or prepared == "refused" then
-            protocol.finalize(ports, a.account, tx_id)
-        end
-    end
-
-    local seconds = os.clock() - started
-    emit({
-        kind = outcome,
-        tx_id = tx_id,
-        reason = why,
-        seconds = seconds,
-        players = { entry.a, entry.b },
-        cross = false,
-    })
-    stats("trade.last_seconds", math.round(seconds * 1000) / 1000)
-    trace("trade", `{tx_id} {outcome} {why or ""} in {math.round(seconds * 1000)} ms`)
-
-    if outcome == "committed" then
+    local ok, outcome, why = pcall(settle, entry)
+    if not ok then
+        warn(`[trade] {entry.id} failed while locking: {outcome}`)
+        finish(entry, "pending", nil)
+    elseif outcome == "committed" then
         finish(entry, "committed", nil)
-    elseif outcome == "aborted" or outcome == "refused" then
-        finish(entry, "aborted", why)
     else
-        finish(entry, "pending", why)
+        finish(entry, view.status_of(outcome), why)
     end
 end
 
@@ -175,9 +138,8 @@ local function negotiating(player: Player): Trade?
 end
 
 local function apply(player: Player, op: negotiation.Op): boolean
-    local remote = cross_service.apply(player, op)
-    if remote ~= nil then
-        return remote
+    if cross_service.busy(player) then
+        return cross_service.apply(player, op)
     end
 
     local entry = negotiating(player)
@@ -197,17 +159,40 @@ local function apply(player: Player, op: negotiation.Op): boolean
     return ok
 end
 
+local function open(a: Player, b: Player)
+    local id = http_service:GenerateGUID(false)
+    local entry: Trade = {
+        id = id,
+        session = negotiation.new(id, a.UserId, b.UserId),
+        a = a,
+        b = b,
+        status = "negotiating",
+        reason = nil,
+        closes_at = nil,
+    }
+    active[a] = entry
+    active[b] = entry
+    open_trades[entry] = true
+    push(entry)
+end
+
+local function close(entry: Trade)
+    open_trades[entry] = nil
+    for _, player in { entry.a, entry.b } do
+        if active[player] == entry then
+            active[player] = nil
+        end
+    end
+end
+
 function trade.invite(player: Player, target_id: number): boolean
     local now = os.clock()
     if
         busy(player)
         or not profiles.get(player)
+        or target_id == player.UserId
         or now - (last_invite[player] or -math.huge) < CONFIG.invite_cooldown
     then
-        return false
-    end
-
-    if target_id == player.UserId then
         return false
     end
 
@@ -217,69 +202,26 @@ function trade.invite(player: Player, target_id: number): boolean
         return cross_service.invite(player, target_id)
     end
 
-    if busy(target) or not profiles.get(target) then
+    if busy(target) or not profiles.get(target) or not pending_invites.offer(target, player.UserId, player, now) then
         return false
     end
 
-    local list = invites[target]
-    if list == nil then
-        list = {}
-        invites[target] = list
-    end
-
-    local count = 0
-    for from_id, invite in list do
-        if now - invite.at > CONFIG.invite_timeout or invite.from.Parent ~= players then
-            list[from_id] = nil
-        else
-            count += 1
-        end
-    end
-
-    if list[player.UserId] or count >= CONFIG.max_invites then
-        return false
-    end
-
-    list[player.UserId] = { from = player, at = now }
     net.trade.invited:fire(target, player.UserId)
 
     return true
 end
 
 function trade.answer(player: Player, from_id: number, accept: boolean): boolean
-    local remote = cross_service.answer(player, from_id, accept)
-    if remote ~= nil then
-        return remote
+    if cross_service.invited(player, from_id) then
+        return cross_service.answer(player, from_id, accept)
     end
 
-    local list = invites[player]
-    local invite = if list then list[from_id] else nil
-    if list == nil or invite == nil then
+    local from = pending_invites.take(player, from_id, os.clock())
+    if from == nil or not accept or busy(player) or busy(from) or from.Parent ~= players then
         return false
     end
 
-    list[from_id] = nil
-    if os.clock() - invite.at > CONFIG.invite_timeout then
-        return false
-    end
-
-    local from = invite.from
-    if not accept or busy(player) or busy(from) or from.Parent ~= players then
-        return false
-    end
-
-    local entry: Trade = {
-        id = http_service:GenerateGUID(false),
-        session = negotiation.new(http_service:GenerateGUID(false), from.UserId, player.UserId),
-        a = from,
-        b = player,
-        status = "negotiating",
-        reason = nil,
-        closes_at = nil,
-    }
-    active[from] = entry
-    active[player] = entry
-    push(entry)
+    open(from, player)
 
     return true
 end
@@ -317,32 +259,16 @@ end
 
 local function tick()
     local now = os.clock()
-    local seen: { [Trade]: boolean } = {}
-    for _, entry in active do
-        if seen[entry] then
-            continue
-        end
-
-        seen[entry] = true
+    for entry in open_trades do
         if entry.status == "negotiating" and negotiation.tick(entry.session, now) then
             task.spawn(execute, entry)
         elseif entry.closes_at and now >= entry.closes_at then
-            for _, player in { entry.a, entry.b } do
-                if active[player] == entry then
-                    active[player] = nil
-                end
-            end
+            close(entry)
         end
     end
 end
 
 local function sweep()
-    for player in active do
-        if player.Parent ~= players then
-            active[player] = nil
-        end
-    end
-
     for _, player in players:GetPlayers() do
         local entry = profiles.get(player)
         if entry and next(entry.account.data.escrow) then
@@ -351,19 +277,29 @@ local function sweep()
     end
 end
 
+local function leave(player: Player)
+    pending_invites.forget(player)
+    last_invite[player] = nil
+    local entry = negotiating(player)
+    if entry then
+        negotiation.apply(entry.session, player.UserId, { kind = "cancel" }, os.clock())
+        finish(entry, "aborted", "left")
+    end
+end
+
 function trade.start()
     local t = guard.t
     local limiter = guard.limiter()
-    local user_id = t.integer(1, MAX_USER_ID)
 
-    net.trade.invite:on(guard.handler("trade.invite", limiter, { user_id }, trade.invite))
-    net.trade.answer:on(guard.handler("trade.answer", limiter, { user_id, t.boolean }, trade.answer))
+    net.trade.invite:on(guard.handler("trade.invite", limiter, { t.user_id }, trade.invite))
+    net.trade.answer:on(guard.handler("trade.answer", limiter, { t.user_id, t.boolean }, trade.answer))
     net.trade.offer_item:on(guard.handler("trade.offer_item", limiter, { t.id, t.boolean }, trade.offer_item))
     net.trade.offer_coins:on(
         guard.handler("trade.offer_coins", limiter, { t.integer(0, CONFIG.max_coins_per_side) }, trade.offer_coins)
     )
     net.trade.accept:on(guard.handler("trade.accept", limiter, { t.integer(1, MAX_VERSION) }, trade.accept))
     net.trade.cancel:on(guard.handler("trade.cancel", limiter, {}, trade.cancel))
+    net.trade.force_accept:on(guard.decoy("trade.force_accept"))
 
     profiles.on_loaded(function(_, entry)
         protocol.recover(ports, entry.account)
@@ -371,50 +307,18 @@ function trade.start()
 
     cross_service.start({
         ports = ports,
-        coord = coordinator.memory_store({
-            map_name = if run_service:IsStudio()
-                then CONFIG.coordinator_map .. tuning.profiles.studio_suffix
-                else CONFIG.coordinator_map,
-            maps = CONFIG.coordinator_maps,
-            presence_ttl = CONFIG.presence_ttl,
-            session_ttl = CONFIG.session_ttl,
-            closed_ttl = CONFIG.closed_ttl,
-            backoff_base = CONFIG.backoff_base,
-            backoff_cap = CONFIG.backoff_cap,
-        }),
+        coord = coordinator.memory_store(),
         busy = function(player)
             return active[player] ~= nil
         end,
-        emit = function(kind, tx_id, reason, seconds, player)
-            emit({ kind = kind, tx_id = tx_id, reason = reason, seconds = seconds, players = { player }, cross = true })
-        end,
+        lock_limiter = lock_limiter,
     })
     gift_service.start()
     inventory.start()
 
-    players.PlayerRemoving:Connect(function(player)
-        invites[player] = nil
-        last_invite[player] = nil
-        local entry = negotiating(player)
-        if entry then
-            negotiation.apply(entry.session, player.UserId, { kind = "cancel" }, os.clock())
-            finish(entry, "aborted", "left")
-        end
-    end)
-
-    task.spawn(function()
-        while true do
-            task.wait(CONFIG.tick_interval)
-            tick()
-        end
-    end)
-
-    task.spawn(function()
-        while true do
-            task.wait(CONFIG.sweep_interval)
-            sweep()
-        end
-    end)
+    players.PlayerRemoving:Connect(leave)
+    every("trade tick", CONFIG.tick_interval, tick)
+    every("trade sweep", CONFIG.sweep_interval, sweep)
 end
 
 return trade

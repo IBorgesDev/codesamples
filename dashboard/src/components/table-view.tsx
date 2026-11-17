@@ -5,7 +5,7 @@ export function TableView({
 }: {
   caption: string;
   columns: string[];
-  rows: (string | number)[][];
+  rows: string[][];
 }) {
   return (
     <div className="max-h-72 overflow-auto rounded-lg ring-1 ring-ring">

@@ -9,6 +9,8 @@ services:
       - "yes"
       - --appendfsync
       - everysec
+      - --maxmemory
+      - ${REDIS_MAXMEMORY:-1gb}
       - --maxmemory-policy
       - noeviction
       - --requirepass
@@ -34,6 +36,7 @@ services:
       EVENTS_SHARDS: ${EVENTS_SHARDS:-16}
       EVENTS_SERVER_TOKEN: ${EVENTS_SERVER_TOKEN:?run mise run up to generate infra/.env}
       EVENTS_ADMIN_TOKEN: ${EVENTS_ADMIN_TOKEN:?run mise run up to generate infra/.env}
+      EVENTS_READ_TOKEN: ${EVENTS_READ_TOKEN:?run mise run up to generate infra/.env}
     ports:
       - 127.0.0.1:8081:8080
     depends_on:

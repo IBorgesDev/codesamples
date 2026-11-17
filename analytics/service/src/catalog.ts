@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { isRecord } from "./record.js";
 
 export type PropType = "string" | "number" | "integer" | "boolean";
 
@@ -21,10 +22,10 @@ export type Catalog = {
   events: Map<string, EventDefinition>;
 };
 
-const PROP_TYPES: ReadonlySet<string> = new Set(["string", "number", "integer", "boolean"]);
+const PROP_TYPES: ReadonlySet<unknown> = new Set<PropType>(["string", "number", "integer", "boolean"]);
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+function isPropType(value: unknown): value is PropType {
+  return PROP_TYPES.has(value);
 }
 
 function positiveInteger(source: Record<string, unknown>, field: string): number {
@@ -36,7 +37,7 @@ function positiveInteger(source: Record<string, unknown>, field: string): number
   return value;
 }
 
-export function parseCatalog(raw: unknown): Catalog {
+function parseCatalog(raw: unknown): Catalog {
   if (!isRecord(raw) || !isRecord(raw.limits) || !isRecord(raw.events)) {
     throw new Error("catalog: expected { version, limits, events }");
   }
@@ -62,11 +63,11 @@ export function parseCatalog(raw: unknown): Catalog {
 
     const props = new Map<string, PropType>();
     for (const [prop, type] of Object.entries(definition.props)) {
-      if (typeof type !== "string" || !PROP_TYPES.has(type)) {
+      if (!isPropType(type)) {
         throw new Error(`catalog: ${name}.${prop} has unknown type ${String(type)}`);
       }
 
-      props.set(prop, type as PropType);
+      props.set(prop, type);
     }
 
     events.set(name, { props });

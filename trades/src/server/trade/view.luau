@@ -1,6 +1,7 @@
 --!strict
 
 local negotiation = require(script.Parent.negotiation)
+local tuning = require(script.Parent.Parent.config.tuning)
 
 export type Status = "negotiating" | "locking" | "committed" | "aborted" | "pending"
 
@@ -21,12 +22,13 @@ function view.of(
     reason: string?,
     session: negotiation.Session,
     user_id: number,
-    now: number
+    now: number,
+    shown_for: number
 )
     local me = if session.a.user_id == user_id then session.a else session.b
     local them = if session.a.user_id == user_id then session.b else session.a
     local lock_at = session.lock_at
-    local accept_in = negotiation.accept_in(session, user_id, now)
+    local accept_in = math.max(negotiation.accept_in(session, user_id, now), tuning.trade.accept_delay - shown_for)
 
     return {
         id = id,

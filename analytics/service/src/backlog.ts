@@ -6,8 +6,8 @@ export class BacklogMonitor {
   constructor(
     private readonly read: () => Promise<number>,
     private readonly onRead: (value: number) => void,
-    private readonly intervalMs = 1000,
-    private readonly now: () => number = Date.now,
+    private readonly intervalMs: number,
+    private readonly now: () => number,
   ) {}
 
   current(): Promise<number> {

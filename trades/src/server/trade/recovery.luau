@@ -1,9 +1,7 @@
 --!strict
 
-local replicated_storage = game:GetService("ReplicatedStorage")
-
 local trade_record = require(script.Parent.record)
-local tuning = require(replicated_storage.Shared.config.tuning)
+local tuning = require(script.Parent.Parent.config.tuning)
 local types = require(script.Parent.types)
 
 export type Action = "settle" | "vote" | "abort" | "wait"

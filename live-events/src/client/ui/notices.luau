@@ -44,10 +44,6 @@ function notices.column(): Frame
     return created
 end
 
-function notices.width(): number
-    return WIDTH
-end
-
 function notices.show(message: string, color: Color3?)
     local label = create("Frame", {
         Size = UDim2.fromOffset(WIDTH, theme.BUTTON_HEIGHT),

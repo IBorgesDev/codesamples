@@ -1,7 +1,6 @@
 --!strict
 
 local http_service = game:GetService("HttpService")
-local replicated_storage = game:GetService("ReplicatedStorage")
 local run_service = game:GetService("RunService")
 local server_script_service = game:GetService("ServerScriptService")
 
@@ -9,8 +8,8 @@ local aggregator = require(script.Parent.Parent.live_event.aggregator)
 local ballot = require(script.Parent.Parent.live_event.ballot)
 local counter = require(script.Parent.Parent.live_event.counter)
 local memory_store = require(script.Parent.Parent.live_event.memory_store)
-local trace = require(replicated_storage.Shared.util.trace)
-local tuning = require(replicated_storage.Shared.config.tuning)
+local trace = require(script.Parent.Parent.util.trace)
+local tuning = require(script.Parent.Parent.config.tuning)
 
 const ATTRIBUTE = "StressTest"
 const LIVE_SERVERS = 12

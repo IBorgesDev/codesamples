@@ -184,10 +184,10 @@ local function vote_card(definition: any, order: number, parent: Instance): Card
                 parts.share.Size = UDim2.fromScale(if total > 0 then value / total else 0, 1)
                 parts.count.Text = thousands(value)
                 parts.stroke.Enabled = mine ~= nil and mine.option == option
-                parts.row.AutoButtonColor = mine == nil or mine.here
+                parts.row.AutoButtonColor = mine == nil or mine.changeable
             end
 
-            if mine and not mine.here then
+            if mine and not mine.changeable then
                 caption.Text = "You voted on another server"
             elseif mine then
                 caption.Text = `{thousands(total)} votes, tap to change yours`

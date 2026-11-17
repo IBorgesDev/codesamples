@@ -1,35 +1,27 @@
 --!strict
 
-local replicated_storage = game:GetService("ReplicatedStorage")
-
 local token_bucket = require(script.Parent.token_bucket)
-local tuning = require(replicated_storage.Shared.config.tuning)
+local tuning = require(script.Parent.Parent.config.tuning)
 
+const CONFIG = tuning.http
 const SECONDS_PER_MINUTE = 60
 
 local limiters: { [string]: token_bucket.Limiter } = {}
 
 local http_budget = {}
 
-function http_budget.take(consumer: string, clock: (() -> number)?): boolean
+function http_budget.take(consumer: string): boolean
     local limiter = limiters[consumer]
     if not limiter then
-        local share = tuning.http.shares[consumer]
+        local share = CONFIG.shares[consumer]
         assert(share, `[http_budget] no share for {consumer}`)
-        limiter = token_bucket.new(share / SECONDS_PER_MINUTE, share / SECONDS_PER_MINUTE * 10, clock)
+
+        local per_second = share / SECONDS_PER_MINUTE
+        limiter = token_bucket.new(per_second, per_second * CONFIG.burst_seconds)
         limiters[consumer] = limiter
     end
 
     return limiter:take(consumer)
-end
-
-function http_budget.reserved(): number
-    local total = 0
-    for _, share in tuning.http.shares do
-        total += share :: number
-    end
-
-    return total
 end
 
 return http_budget

@@ -1,66 +1,150 @@
 import "server-only";
-import { LIVE_EVENTS } from "./catalog";
+import { LIVE_EVENTS, liveEventFrom } from "./catalog";
 import { demoData } from "./demo";
-import type { ActivityRow, DashboardData, LiveEvent, Outcome, Point } from "./types";
+import type { ActivityRow, DashboardData, LiveEvent, Outcome, Point, Range } from "./types";
 
 const TIMEOUT_MS = 4_000;
 const SECOND_MS = 1_000;
+const SHARED_FOR_MS = 2_000;
 
-type OverviewResponse = {
-  rows: { minute: number; name: string; weighted: number; users: number }[];
-  players?: { minute: number; users: number }[];
+type Fields = Record<string, unknown>;
+
+type Overview = {
+  rows: { minute: number; name: string; weighted: number }[];
+  players: { minute: number; users: number }[];
 };
 
-type TradesResponse = {
-  trades: number;
-  cross_server_share: number | null;
-  seconds: { p50: number | null; p95: number | null };
+type Trades = {
+  crossShare: number | null;
+  p50: number | null;
+  p95: number | null;
   outcomes: { outcome: string; trades: number }[];
 };
 
-type EventSnapshot = { state?: string; totals?: Record<string, number>; servers?: number };
+type Snapshot = { totals: Record<string, number>; servers: number };
 
-async function getJson<T>(url: string, token: string): Promise<T> {
+function fields(value: unknown): Fields {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new TypeError("expected an object");
+  }
+
+  return value as Fields;
+}
+
+function list(value: unknown): unknown[] {
+  if (!Array.isArray(value)) {
+    throw new TypeError("expected an array");
+  }
+
+  return value;
+}
+
+function finite(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new TypeError("expected a number");
+  }
+
+  return value;
+}
+
+function finiteOrNull(value: unknown): number | null {
+  return value === null || value === undefined ? null : finite(value);
+}
+
+function text(value: unknown): string {
+  if (typeof value !== "string") {
+    throw new TypeError("expected a string");
+  }
+
+  return value;
+}
+
+function overviewFrom(body: unknown): Overview {
+  const overview = fields(body);
+  return {
+    rows: list(overview.rows).map((item) => {
+      const row = fields(item);
+      return { minute: finite(row.minute), name: text(row.name), weighted: finite(row.weighted) };
+    }),
+    players: list(overview.players).map((item) => {
+      const point = fields(item);
+      return { minute: finite(point.minute), users: finite(point.users) };
+    }),
+  };
+}
+
+function tradesFrom(body: unknown): Trades {
+  const trades = fields(body);
+  const seconds = fields(trades.seconds);
+  return {
+    crossShare: finiteOrNull(trades.cross_server_share),
+    p50: finiteOrNull(seconds.p50),
+    p95: finiteOrNull(seconds.p95),
+    outcomes: list(trades.outcomes).map((item) => {
+      const row = fields(item);
+      return { outcome: text(row.outcome), trades: finite(row.trades) };
+    }),
+  };
+}
+
+function snapshotFrom(body: unknown): Snapshot {
+  const snapshot = fields(body);
+  const totals: Record<string, number> = {};
+  for (const [option, value] of Object.entries(fields(snapshot.totals))) {
+    totals[option] = finite(value);
+  }
+
+  return { totals, servers: finite(snapshot.servers) };
+}
+
+async function read(url: string, token: string): Promise<unknown> {
   const response = await fetch(url, {
     headers: { authorization: `Bearer ${token}` },
     cache: "no-store",
+    redirect: "error",
     signal: AbortSignal.timeout(TIMEOUT_MS),
   });
   if (!response.ok) {
-    throw new Error(`${new URL(url).pathname} answered ${response.status}`);
+    throw new Error(`answered ${response.status}`);
   }
 
-  return (await response.json()) as T;
+  return response.json();
 }
 
-function activityFrom(overview: OverviewResponse): { players: Point[]; names: string[]; rows: ActivityRow[] } {
+async function attempt<T>(label: string, problems: string[], load: () => Promise<T>): Promise<T | null> {
+  try {
+    return await load();
+  } catch (error) {
+    console.error(`dashboard: ${label} failed`, error);
+    problems.push(`${label} unavailable`);
+    return null;
+  }
+}
+
+function activityFrom(overview: Overview): { players: Point[]; names: string[]; rows: ActivityRow[] } {
   const byMinute = new Map<number, ActivityRow>();
   const names = new Set<string>();
-  const usersByMinute = new Map<number, number>();
 
   for (const row of overview.rows) {
-    const minute = row.minute * SECOND_MS;
-    const entry = byMinute.get(minute) ?? ({ minute } as ActivityRow);
+    const minuteMs = row.minute * SECOND_MS;
+    const entry = byMinute.get(minuteMs) ?? { minute: minuteMs };
     entry[row.name] = row.weighted;
-    byMinute.set(minute, entry);
+    byMinute.set(minuteMs, entry);
     names.add(row.name);
-    usersByMinute.set(minute, Math.max(usersByMinute.get(minute) ?? 0, row.users));
   }
 
-  const players = overview.players
-    ? overview.players.map((point) => ({ minute: point.minute * SECOND_MS, value: point.users }))
-    : [...usersByMinute.entries()].map(([minute, value]) => ({ minute, value }));
-
   return {
-    players: players.sort((a, b) => a.minute - b.minute),
+    players: overview.players
+      .map((point) => ({ minute: point.minute * SECOND_MS, value: point.users }))
+      .sort((a, b) => a.minute - b.minute),
     names: [...names],
     rows: [...byMinute.values()].sort((a, b) => a.minute - b.minute),
   };
 }
 
-function outcomesFrom(trades: TradesResponse): Record<Outcome, number> {
+function outcomesFrom(rows: Trades["outcomes"]): Record<Outcome, number> {
   const out: Record<Outcome, number> = { committed: 0, aborted: 0, pending: 0 };
-  for (const row of trades.outcomes) {
+  for (const row of rows) {
     if (row.outcome === "committed") {
       out.committed += row.trades;
     } else if (row.outcome === "aborted" || row.outcome === "refused") {
@@ -73,73 +157,66 @@ function outcomesFrom(trades: TradesResponse): Record<Outcome, number> {
   return out;
 }
 
-async function liveEvents(problems: string[]): Promise<LiveEvent[]> {
+function liveEvents(problems: string[]): Promise<LiveEvent[]> {
   const url = process.env.EVENTS_URL;
   const token = process.env.EVENTS_READ_TOKEN;
 
   return Promise.all(
     LIVE_EVENTS.map(async (entry) => {
-      let snapshot: EventSnapshot | null = null;
-      if (url && token) {
-        try {
-          snapshot = await getJson<EventSnapshot>(`${url}/v1/events/${entry.id}`, token);
-        } catch (error) {
-          problems.push(`Live event ${entry.id}: ${(error as Error).message}`);
-        }
-      }
+      const snapshot =
+        url && token
+          ? await attempt(`Live event ${entry.id}`, problems, async () =>
+              snapshotFrom(await read(`${url}/v1/events/${entry.id}`, token)),
+            )
+          : null;
 
-      return {
-        id: entry.id,
-        title: entry.title,
-        kind: entry.kind,
-        goal: entry.goal,
-        state: snapshot?.state ?? "unknown",
-        servers: snapshot?.servers ?? 0,
-        options: Object.entries(entry.labels).map(([id, label]) => ({
-          id,
-          label,
-          value: snapshot?.totals?.[id] ?? 0,
-        })),
-      };
+      return liveEventFrom(entry, snapshot?.servers ?? 0, (id) => snapshot?.totals[id] ?? 0);
     }),
   );
 }
 
-export async function loadDashboard(rangeMinutes: number): Promise<DashboardData> {
+async function load(range: Range): Promise<DashboardData> {
   const url = process.env.ANALYTICS_URL;
   const token = process.env.ANALYTICS_READ_TOKEN;
   if (!url || !token) {
-    return demoData(rangeMinutes);
+    return demoData(range);
   }
 
   const problems: string[] = [];
   const [overview, trades, live] = await Promise.all([
-    getJson<OverviewResponse>(`${url}/v1/stats/overview?minutes=${rangeMinutes}`, token).catch((error: Error) => {
-      problems.push(`Activity: ${error.message}`);
-      return null;
-    }),
-    getJson<TradesResponse>(`${url}/v1/stats/trades?minutes=${rangeMinutes}`, token).catch((error: Error) => {
-      problems.push(`Trades: ${error.message}`);
-      return null;
-    }),
+    attempt("Activity", problems, async () => overviewFrom(await read(`${url}/v1/stats/overview?minutes=${range}`, token))),
+    attempt("Trades", problems, async () => tradesFrom(await read(`${url}/v1/stats/trades?minutes=${range}`, token))),
     liveEvents(problems),
   ]);
 
-  const activity = overview ? activityFrom(overview) : { players: [], names: [], rows: [] };
+  const activity = activityFrom(overview ?? { rows: [], players: [] });
 
   return {
     source: "live",
     problems,
-    generatedAt: Date.now(),
-    rangeMinutes,
     players: activity.players,
     activity: { names: activity.names, rows: activity.rows },
     trades: {
-      outcomes: trades ? outcomesFrom(trades) : { committed: 0, aborted: 0, pending: 0 },
-      crossShare: trades?.cross_server_share ?? null,
-      p50: trades?.seconds.p50 ?? null,
-      p95: trades?.seconds.p95 ?? null,
+      outcomes: outcomesFrom(trades?.outcomes ?? []),
+      crossShare: trades?.crossShare ?? null,
+      p50: trades?.p50 ?? null,
+      p95: trades?.p95 ?? null,
     },
     live,
   };
+}
+
+const shared = new Map<Range, { at: number; data: Promise<DashboardData> }>();
+
+export function loadDashboard(range: Range, now = Date.now()): Promise<DashboardData> {
+  const current = shared.get(range);
+  if (current && now - current.at < SHARED_FOR_MS) {
+    return current.data;
+  }
+
+  const data = load(range);
+  shared.set(range, { at: now, data });
+  data.catch(() => shared.delete(range));
+
+  return data;
 }

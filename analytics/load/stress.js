@@ -9,7 +9,7 @@ const EVENTS_PER_FLUSH = Number(__ENV.EVENTS_PER_FLUSH || 40);
 const VUS = Number(__ENV.VUS || Math.max(50, Math.ceil(RATE / 20)));
 const PLAYERS_PER_SERVER = 8;
 const FLUSH_SECONDS = 10;
-const PLACE_ID = 1;
+const PLACE_ID = Number(__ENV.PLACE_ID || 1);
 const RUN = Date.now().toString(36);
 
 const catalog = JSON.parse(open(__ENV.SCHEMA_PATH || "/schema/events.json"));

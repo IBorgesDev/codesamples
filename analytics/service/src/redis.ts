@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
 import type { Redis } from "ioredis";
+import { CONSUMER_GROUP } from "./keys.js";
 
 export type Runner = (keys: string[], args: (string | number)[]) => Promise<unknown>;
 
-export type RawEntry = { id: string; batch: string | null };
+export type StreamEntry = { id: string; batch: string | null };
 
 export function script(redis: Redis, lua: string): Runner {
   const sha = createHash("sha1").update(lua).digest("hex");
@@ -30,9 +31,9 @@ export function flatRecord(reply: unknown): Map<string, unknown> {
   return out;
 }
 
-export function entries(reply: unknown): RawEntry[] {
+export function entries(reply: unknown): StreamEntry[] {
   const list = Array.isArray(reply) ? reply : [];
-  const out: RawEntry[] = [];
+  const out: StreamEntry[] = [];
   for (const item of list) {
     if (!Array.isArray(item) || item.length < 1) {
       continue;
@@ -50,10 +51,16 @@ export function isMissingKey(error: unknown): boolean {
   return String(error).includes("no such key");
 }
 
-export function isBusyGroup(error: unknown): boolean {
-  return String(error).includes("BUSYGROUP");
-}
-
 export function isMissingGroup(error: unknown): boolean {
   return String(error).includes("NOGROUP");
+}
+
+export async function ensureGroup(redis: Redis, key: string): Promise<void> {
+  try {
+    await redis.call("XGROUP", "CREATE", key, CONSUMER_GROUP, "0", "MKSTREAM");
+  } catch (error) {
+    if (!String(error).includes("BUSYGROUP")) {
+      throw error;
+    }
+  }
 }

@@ -2,6 +2,7 @@
 
 local data_store_service = game:GetService("DataStoreService")
 
+local parse = require(script.Parent.parse)
 local types = require(script.Parent.types)
 
 type Snapshot = types.Snapshot
@@ -72,8 +73,8 @@ function archive.open(name: string): Store
     return {
         write = function(event_id, kind, snapshot)
             local ok = pcall(function()
-                store:UpdateAsync(event_id, function(current: Snapshot?): Snapshot?
-                    return archive.merge(kind, current, snapshot)
+                store:UpdateAsync(event_id, function(current: unknown): Snapshot?
+                    return archive.merge(kind, parse.snapshot(current), snapshot)
                 end)
             end)
 
@@ -84,7 +85,7 @@ function archive.open(name: string): Store
                 return store:GetAsync(event_id)
             end)
 
-            return ok, if ok then value else nil
+            return ok, if ok then parse.snapshot(value) else nil
         end,
     }
 end

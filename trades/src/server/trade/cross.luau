@@ -69,14 +69,10 @@ local function mark_opened(coord: Coordinator, session_id: string): boolean
     return stored
 end
 
-local function side(party: negotiation.Party): types.Side
-    return { user_id = party.user_id, coins = party.coins, items = party.items, ready = false }
-end
-
 local function settled(coord: Coordinator, session_id: string, outcome: string, why: string?): string
     if outcome == "open" then
         mark_opened(coord, session_id)
-    elseif outcome == "committed" or outcome == "aborted" or outcome == "refused" then
+    elseif protocol.decided(outcome) then
         cross.record(coord, session_id, outcome, why)
     end
 
@@ -110,8 +106,15 @@ function cross.commit(
         return "waiting", nil
     end
 
-    local outcome, why =
-        protocol.open(ports, account_a, tx_id, side(shared.session.a), side(shared.session.b), shared.session.version)
+    local session = shared.session
+    local outcome, why = protocol.open(
+        ports,
+        account_a,
+        tx_id,
+        negotiation.side(session.a),
+        negotiation.side(session.b),
+        session.version
+    )
 
     return settled(coord, session_id, outcome, why), why
 end

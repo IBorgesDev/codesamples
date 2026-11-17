@@ -15,6 +15,7 @@ local tree = {
         accept = remote.to_server(),
         cancel = remote.to_server(),
         gift = remote.to_server(tuning.trade.gift_pace),
+        force_accept = remote.to_server(),
         invited = remote.to_client(),
         view = remote.state(),
         inventory = remote.state(),

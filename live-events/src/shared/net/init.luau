@@ -11,6 +11,7 @@ local tree = {
         progress = remote.to_client("unreliable"),
         sync = remote.to_client(),
         vote = remote.to_server(tuning.live_event.vote_pace),
+        contribute = remote.to_server(),
         mine = remote.state(),
     },
 }

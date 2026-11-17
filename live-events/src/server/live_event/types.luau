@@ -51,9 +51,10 @@ export type Layout = {
     live_window: number?,
 }
 
+export type Published = "sent" | "throttled" | "failed"
+
 export type Backend = {
-    publish: (server_id: string, entries: { [string]: Entry }, sync: boolean) -> (boolean, { [string]: Snapshot }?),
-    read: (event_id: string) -> (boolean, Snapshot?),
+    publish: (server_id: string, entries: { [string]: Entry }, urgent: boolean) -> (Published, { [string]: Snapshot }),
 }
 
 export type ShardStore = {

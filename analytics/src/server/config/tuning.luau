@@ -17,6 +17,7 @@ tuning.analytics = table.freeze({
 })
 
 tuning.http = table.freeze({
+    burst_seconds = 10,
     shares = table.freeze({
         analytics = 240,
     }),

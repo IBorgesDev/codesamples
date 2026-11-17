@@ -1,15 +1,41 @@
 import { timingSafeEqual } from "node:crypto";
-import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
-import type { Config } from "./config.js";
-import { ignoredOptions, publishedEvents, registry, requestSeconds } from "./metrics.js";
+import Fastify, { type FastifyError, type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import type { Coalescer } from "./coalescer.js";
-import type { Contribution, EventSpec, EventStore, RedisClient, Snapshot } from "./store.js";
+import type { Config } from "./config.js";
+import { type Log, logger } from "./log.js";
+import { ignoredOptions, publishedEvents, registry, requestSeconds } from "./metrics.js";
+import { type Contribution, emptyTally, type EventSpec, type EventStore, type RedisClient, type Snapshot } from "./store.js";
 
 const ID = "^[a-z0-9_-]{1,48}$";
 const OPTION = "^[a-z0-9_]{1,32}$";
 const SERVER = "^[A-Za-z0-9-]{1,64}$";
+const BODILESS_ROUTE_BYTES = 1024;
+const MILLISECONDS = 1000;
 
-type Role = "server" | "admin";
+const ERROR_CODES: Record<string, string> = {
+  FST_ERR_VALIDATION: "invalid_request",
+  FST_ERR_CTP_BODY_TOO_LARGE: "too_large",
+  FST_ERR_CTP_INVALID_JSON_BODY: "invalid_json",
+  FST_ERR_CTP_EMPTY_JSON_BODY: "invalid_json",
+  FST_ERR_CTP_INVALID_MEDIA_TYPE: "unsupported_media_type",
+  FST_ERR_CTP_INVALID_CONTENT_LENGTH: "invalid_content_length",
+};
+
+type Role = "server" | "admin" | "read";
+
+type Deps = {
+  store: EventStore;
+  redis: RedisClient;
+  config: Config;
+  coalescer?: Coalescer;
+  now?: () => number;
+  log?: Log;
+};
+
+type PublishBody = {
+  server: string;
+  events: Record<string, { plus?: Record<string, number>; minus?: Record<string, number> } | []>;
+};
 
 function wire(snapshot: Snapshot) {
   return {
@@ -23,23 +49,37 @@ function wire(snapshot: Snapshot) {
   };
 }
 
-type Deps = {
-  store: EventStore;
-  redis: RedisClient;
-  config: Config;
-  coalescer?: Coalescer;
-  now?: () => number;
-};
-
 function matches(header: string | undefined, token: string): boolean {
   const presented = Buffer.from(header ?? "");
   const expected = Buffer.from(`Bearer ${token}`);
   return presented.length === expected.length && timingSafeEqual(presented, expected);
 }
 
-export function buildApp({ store, redis, config, coalescer, now = () => Math.floor(Date.now() / 1000) }: Deps): FastifyInstance {
-  const app = Fastify({ logger: false, bodyLimit: 64 * 1024 });
+function contributionFrom(given: PublishBody["events"][string]): Contribution {
+  if (Array.isArray(given)) {
+    return { plus: emptyTally(), minus: emptyTally() };
+  }
 
+  return { plus: Object.assign(emptyTally(), given.plus), minus: Object.assign(emptyTally(), given.minus) };
+}
+
+export function buildApp({
+  store,
+  redis,
+  config,
+  coalescer,
+  now = () => Math.floor(Date.now() / MILLISECONDS),
+  log = logger("events"),
+}: Deps): FastifyInstance {
+  const app = Fastify({
+    logger: false,
+    bodyLimit: BODILESS_ROUTE_BYTES,
+    requestTimeout: config.requestTimeoutMs,
+    connectionTimeout: config.requestTimeoutMs,
+    ajv: { customOptions: { coerceTypes: false, removeAdditional: false } },
+  });
+  const tokens: Record<Role, string> = { server: config.serverToken, admin: config.adminToken, read: config.readToken };
+  const eventParams = { type: "object", properties: { id: { type: "string", pattern: ID } }, required: ["id"] };
   const tally = {
     type: "object",
     maxProperties: config.maxOptionsPerEvent,
@@ -49,21 +89,28 @@ export function buildApp({ store, redis, config, coalescer, now = () => Math.flo
 
   function guard(...roles: Role[]) {
     return async (request: FastifyRequest, reply: FastifyReply) => {
-      const header = request.headers.authorization;
-      const allowed =
-        (roles.includes("server") && matches(header, config.serverToken)) ||
-        (roles.includes("admin") && matches(header, config.adminToken));
-
-      if (!allowed) {
-        await reply.code(401).send({ error: "unauthorized" });
+      if (!roles.some((role) => matches(request.headers.authorization, tokens[role]))) {
+        return reply.code(401).send({ error: "unauthorized" });
       }
     };
   }
 
+  app.setErrorHandler((error: FastifyError, _request, reply) => {
+    const status = typeof error.statusCode === "number" && error.statusCode >= 400 && error.statusCode < 500 ? error.statusCode : 503;
+    if (status === 503) {
+      log("request failed", error);
+      return reply.code(status).header("retry-after", String(config.retryAfterSeconds)).send({ error: "unavailable" });
+    }
+
+    return reply.code(status).send({ error: ERROR_CODES[error.code] ?? "bad_request", detail: error.message });
+  });
+
+  app.setNotFoundHandler((_request, reply) => reply.code(404).send({ error: "not_found" }));
+
   app.addHook("onResponse", async (request, reply) => {
     requestSeconds
       .labels(request.routeOptions.url ?? "unknown", String(reply.statusCode))
-      .observe(reply.elapsedTime / 1000);
+      .observe(reply.elapsedTime / MILLISECONDS);
   });
 
   app.get("/healthz", async (_request, reply) => {
@@ -71,16 +118,17 @@ export function buildApp({ store, redis, config, coalescer, now = () => Math.flo
     return reply.code(pong === "PONG" ? 200 : 503).send({ redis: pong === "PONG" });
   });
 
-  app.get("/metrics", async (_request, reply) => {
+  app.get("/metrics", { onRequest: guard("admin", "read") }, async (_request, reply) => {
     return reply.type(registry.contentType).send(await registry.metrics());
   });
 
   app.put<{ Params: { id: string }; Body: { options: string[]; ends_at?: number | null; goal?: { option: string; target: number } | null } }>(
     "/v1/events/:id",
     {
-      preHandler: guard("admin"),
+      onRequest: guard("admin"),
+      bodyLimit: config.bodyLimitBytes,
       schema: {
-        params: { type: "object", properties: { id: { type: "string", pattern: ID } }, required: ["id"] },
+        params: eventParams,
         body: {
           type: "object",
           additionalProperties: false,
@@ -100,7 +148,7 @@ export function buildApp({ store, redis, config, coalescer, now = () => Math.flo
               required: ["option", "target"],
               properties: {
                 option: { type: "string", pattern: OPTION },
-                target: { type: "integer", minimum: 1 },
+                target: { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER },
               },
             },
           },
@@ -125,10 +173,7 @@ export function buildApp({ store, redis, config, coalescer, now = () => Math.flo
 
   app.get<{ Params: { id: string } }>(
     "/v1/events/:id",
-    {
-      preHandler: guard("server", "admin"),
-      schema: { params: { type: "object", properties: { id: { type: "string", pattern: ID } }, required: ["id"] } },
-    },
+    { onRequest: guard("server", "admin", "read"), schema: { params: eventParams } },
     async (request, reply) => {
       const snapshot = await store.read(request.params.id, now());
       if (!snapshot) {
@@ -139,13 +184,11 @@ export function buildApp({ store, redis, config, coalescer, now = () => Math.flo
     },
   );
 
-  app.post<{
-    Body: { server: string; events: Record<string, { plus?: Record<string, number>; minus?: Record<string, number> } | []> };
-    Querystring: { sync?: string };
-  }>(
+  app.post<{ Body: PublishBody; Querystring: { sync?: string } }>(
     "/v1/publish",
     {
-      preHandler: guard("server"),
+      onRequest: guard("server"),
+      bodyLimit: config.bodyLimitBytes,
       schema: {
         body: {
           type: "object",
@@ -171,36 +214,28 @@ export function buildApp({ store, redis, config, coalescer, now = () => Math.flo
     },
     async (request) => {
       const events: Record<string, Contribution> = {};
-      for (const [id, contribution] of Object.entries(request.body.events)) {
-        events[id] = Array.isArray(contribution)
-          ? { plus: {}, minus: {} }
-          : { plus: contribution.plus ?? {}, minus: contribution.minus ?? {} };
+      for (const [id, given] of Object.entries(request.body.events)) {
+        events[id] = contributionFrom(given);
       }
 
-      const sync = request.query.sync === "1" || !coalescer;
-      const all = sync
-        ? new Map(Object.entries(await store.publish(request.body.server, events, now())))
-        : await (coalescer as Coalescer).add(request.body.server, events);
-      const snapshots: Record<string, Snapshot | null> = {};
+      const coalesced = coalescer !== undefined && request.query.sync !== "1";
+      const snapshots = coalesced ? await coalescer.add(request.body.server, events) : await store.publish(request.body.server, events, now());
+      const wired: Record<string, ReturnType<typeof wire>> = {};
+      const missing: string[] = [];
       for (const id of Object.keys(events)) {
-        snapshots[id] = all.get(id) ?? null;
-      }
-
-      const missing = Object.keys(snapshots).filter((id) => snapshots[id] === null);
-      for (const snapshot of Object.values(snapshots)) {
+        const snapshot = snapshots.get(id);
         if (snapshot) {
+          wired[id] = wire(snapshot);
           publishedEvents.labels(snapshot.state).inc();
-          ignoredOptions.inc(snapshot.ignored);
+          if (!coalesced) {
+            ignoredOptions.inc(snapshot.ignored);
+          }
+        } else {
+          missing.push(id);
         }
       }
 
       publishedEvents.labels("missing").inc(missing.length);
-      const wired: Record<string, ReturnType<typeof wire>> = {};
-      for (const [id, snapshot] of Object.entries(snapshots)) {
-        if (snapshot) {
-          wired[id] = wire(snapshot);
-        }
-      }
 
       return { events: wired, missing };
     },

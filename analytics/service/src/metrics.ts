@@ -1,10 +1,8 @@
 import { Counter, Gauge, Histogram, Registry, collectDefaultMetrics } from "prom-client";
 
-export function createRegistry(withDefaults: boolean): Registry {
+export function createRegistry(): Registry {
   const registry = new Registry();
-  if (withDefaults) {
-    collectDefaultMetrics({ register: registry });
-  }
+  collectDefaultMetrics({ register: registry });
 
   return registry;
 }
@@ -92,6 +90,11 @@ export function createWorkerMetrics(registry: Registry) {
     malformed: new Counter({
       name: "analytics_worker_malformed_entries_total",
       help: "Entries that could not be decoded and were acknowledged without rows",
+      registers: [registry],
+    }),
+    rejected: new Counter({
+      name: "analytics_worker_rejected_entries_total",
+      help: "Entries whose rows the database refused, moved to the rejected stream",
       registers: [registry],
     }),
   };

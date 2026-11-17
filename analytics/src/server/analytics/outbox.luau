@@ -17,7 +17,7 @@ export type Batch = {
     created_at: number,
 }
 
-export type Buffer = {
+export type Outbox = {
     capacity: number,
     events: { [number]: Event },
     first: number,
@@ -28,9 +28,9 @@ export type Buffer = {
     retry_at: number,
 }
 
-local buffer = {}
+local outbox = {}
 
-function buffer.new(capacity: number): Buffer
+function outbox.new(capacity: number): Outbox
     return {
         capacity = capacity,
         events = {},
@@ -43,12 +43,16 @@ function buffer.new(capacity: number): Buffer
     }
 end
 
-function buffer.size(self: Buffer): number
+function outbox.size(self: Outbox): number
     return self.last - self.first + 1
 end
 
-function buffer.push(self: Buffer, event: Event)
-    if buffer.size(self) >= self.capacity then
+function outbox.empty(self: Outbox): boolean
+    return self.pending == nil and outbox.size(self) == 0 and self.dropped == 0
+end
+
+function outbox.push(self: Outbox, event: Event)
+    if outbox.size(self) >= self.capacity then
         self.events[self.first] = nil
         self.first += 1
         self.dropped += 1
@@ -58,17 +62,21 @@ function buffer.push(self: Buffer, event: Event)
     self.events[self.last] = event
 end
 
-function buffer.ready(self: Buffer, now: number): boolean
-    return now >= self.retry_at and (self.pending ~= nil or buffer.size(self) > 0 or self.dropped > 0)
+function outbox.ready(self: Outbox, now: number): boolean
+    return now >= self.retry_at and not outbox.empty(self)
 end
 
-function buffer.take(self: Buffer, max_events: number, now: number): Batch?
+function outbox.retrying(self: Outbox): boolean
+    return self.pending ~= nil
+end
+
+function outbox.take(self: Outbox, max_events: number, now: number): Batch?
     local pending = self.pending
     if pending then
         return pending
     end
 
-    local count = math.min(max_events, buffer.size(self))
+    local count = math.min(max_events, outbox.size(self))
     if count == 0 and self.dropped == 0 then
         return nil
     end
@@ -81,6 +89,7 @@ function buffer.take(self: Buffer, max_events: number, now: number): Batch?
 
     self.first += count
     self.seq += 1
+
     local batch: Batch = { seq = self.seq, events = events, dropped = self.dropped, attempts = 0, created_at = now }
     self.dropped = 0
     self.pending = batch
@@ -88,24 +97,26 @@ function buffer.take(self: Buffer, max_events: number, now: number): Batch?
     return batch
 end
 
-function buffer.expired(self: Buffer, now: number, max_age: number): boolean
-    local pending = self.pending
-
-    return pending ~= nil and now - pending.created_at > max_age
+function outbox.expired(batch: Batch, now: number, max_age: number): boolean
+    return now - batch.created_at > max_age
 end
 
-function buffer.acked(self: Buffer)
-    self.pending = nil
+function outbox.settle(self: Outbox, batch: Batch)
+    if self.pending == batch then
+        self.pending = nil
+        self.retry_at = 0
+    end
+end
+
+function outbox.retry_in(self: Outbox, batch: Batch, now: number, delay: number)
+    if self.pending == batch then
+        batch.attempts += 1
+        self.retry_at = now + delay
+    end
+end
+
+function outbox.retry_now(self: Outbox)
     self.retry_at = 0
 end
 
-function buffer.failed(self: Buffer, now: number, delay: number)
-    local pending = self.pending
-    if pending then
-        pending.attempts += 1
-    end
-
-    self.retry_at = now + delay
-end
-
-return buffer
+return outbox

@@ -1,23 +1,25 @@
 import { createHash } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { decodeBatch, type EventRow, toRows } from "./batch.js";
+import type { InsertResult } from "./clickhouse.js";
+import { type Log, logger } from "./log.js";
 import type { WorkerMetrics } from "./metrics.js";
-import { isMissingGroup, type RawEntry } from "./redis.js";
-
-export type ShardEntry = RawEntry;
+import { isMissingGroup, type StreamEntry } from "./redis.js";
 
 export interface ShardStream {
   readonly key: string;
   ensureGroup(): Promise<void>;
-  readPending(count: number): Promise<ShardEntry[]>;
-  readNew(count: number, blockMs: number): Promise<ShardEntry[]>;
-  reclaim(minIdleMs: number, count: number): Promise<ShardEntry[]>;
+  readPending(count: number): Promise<StreamEntry[]>;
+  readNew(count: number, blockMs: number): Promise<StreamEntry[]>;
+  reclaim(minIdleMs: number, count: number): Promise<StreamEntry[]>;
   touch(ids: string[]): Promise<void>;
   ack(ids: string[]): Promise<void>;
+  setAside(entry: StreamEntry): Promise<void>;
+  trim(): Promise<void>;
 }
 
 export interface RowSink {
-  insert(rows: EventRow[], token: string): Promise<void>;
+  insert(rows: EventRow[], token: string): Promise<InsertResult>;
 }
 
 export type Sleep = (ms: number, signal?: AbortSignal) => Promise<void>;
@@ -32,16 +34,18 @@ export type ShardWorkerOptions = {
   now?: () => number;
   sleep?: Sleep;
   random?: () => number;
-  log?: (message: string, error: unknown) => void;
+  log?: Log;
 };
 
-export class Stopped extends Error {
+type Load = { entry: StreamEntry; rows: EventRow[] };
+
+class Stopped extends Error {
   constructor() {
     super("worker stopped");
   }
 }
 
-export const sleepUnlessStopped: Sleep = async (ms, signal) => {
+const sleepUnlessStopped: Sleep = async (ms, signal) => {
   try {
     await delay(ms, undefined, { signal });
   } catch {
@@ -49,11 +53,11 @@ export const sleepUnlessStopped: Sleep = async (ms, signal) => {
   }
 };
 
-export function dedupToken(streamKey: string, ids: string[]): string {
+function dedupToken(streamKey: string, ids: string[]): string {
   return `${streamKey}:${ids.length}:${createHash("sha256").update(ids.join(",")).digest("hex")}`;
 }
 
-export function fullJitter(attempt: number, baseMs: number, maxMs: number, random: () => number): number {
+function fullJitter(attempt: number, baseMs: number, maxMs: number, random: () => number): number {
   return random() * Math.min(maxMs, baseMs * 2 ** attempt);
 }
 
@@ -64,7 +68,7 @@ export class ShardWorker {
   private readonly now: () => number;
   private readonly sleep: Sleep;
   private readonly random: () => number;
-  private readonly log: (message: string, error: unknown) => void;
+  private readonly log: Log;
 
   constructor(
     private readonly stream: ShardStream,
@@ -75,7 +79,7 @@ export class ShardWorker {
     this.now = options.now ?? Date.now;
     this.sleep = options.sleep ?? sleepUnlessStopped;
     this.random = options.random ?? Math.random;
-    this.log = options.log ?? ((message, error) => console.error(`analytics-worker: ${message}`, error));
+    this.log = options.log ?? logger("analytics-worker");
     this.beatAt = this.now();
   }
 
@@ -104,6 +108,7 @@ export class ShardWorker {
           groupReady = false;
         }
 
+        this.drainingOwnPending = true;
         this.metrics.failures.labels("read").inc();
         this.log(`${this.stream.key} step failed`, error);
         await this.sleep(this.backoff(failures), signal);
@@ -114,28 +119,10 @@ export class ShardWorker {
     }
   }
 
-  async step(signal?: AbortSignal): Promise<number> {
-    let entries: ShardEntry[];
-    let reclaimed = false;
-    if (this.drainingOwnPending) {
-      entries = await this.stream.readPending(this.options.readCount);
-      if (entries.length === 0) {
-        this.drainingOwnPending = false;
-        return 0;
-      }
-    } else if (this.now() - this.lastReclaimAt >= this.options.reclaimEveryMs) {
-      this.lastReclaimAt = this.now();
-      entries = await this.stream.reclaim(this.options.claimIdleMs, this.options.readCount);
-      reclaimed = entries.length > 0;
-      if (!reclaimed) {
-        entries = await this.stream.readNew(this.options.readCount, this.options.blockMs);
-      }
-    } else {
-      entries = await this.stream.readNew(this.options.readCount, this.options.blockMs);
-    }
-
+  async step(signal?: AbortSignal): Promise<void> {
+    const { entries, reclaimed } = await this.nextEntries();
     if (entries.length === 0) {
-      return 0;
+      return;
     }
 
     if (reclaimed) {
@@ -143,46 +130,84 @@ export class ShardWorker {
     }
 
     await this.deliver(entries, signal);
-    return entries.length;
   }
 
-  private async deliver(entries: ShardEntry[], signal?: AbortSignal): Promise<void> {
-    const ids = entries.map((entry) => entry.id);
-    const rows: EventRow[] = [];
-    let malformed = 0;
-    for (const entry of entries) {
-      const batch = decodeBatch(entry.batch);
-      if (batch === null) {
-        malformed += 1;
-        continue;
+  private async nextEntries(): Promise<{ entries: StreamEntry[]; reclaimed: boolean }> {
+    if (this.drainingOwnPending) {
+      const entries = await this.stream.readPending(this.options.readCount);
+      this.drainingOwnPending = entries.length > 0;
+      return { entries, reclaimed: false };
+    }
+
+    if (this.now() - this.lastReclaimAt >= this.options.reclaimEveryMs) {
+      this.lastReclaimAt = this.now();
+      const entries = await this.stream.reclaim(this.options.claimIdleMs, this.options.readCount);
+      if (entries.length > 0) {
+        return { entries, reclaimed: true };
       }
-
-      rows.push(...toRows(batch));
     }
 
-    if (malformed > 0) {
-      this.metrics.malformed.inc(malformed);
-    }
+    return { entries: await this.stream.readNew(this.options.readCount, this.options.blockMs), reclaimed: false };
+  }
 
-    if (rows.length > 0) {
-      const token = dedupToken(this.stream.key, ids);
-      await this.retry("insert", ids, signal, async () => {
-        const stopTimer = this.metrics.insertSeconds.startTimer();
-        await this.sink.insert(rows, token);
-        stopTimer();
-      });
-      this.metrics.rows.inc(rows.length);
+  private async deliver(entries: StreamEntry[], signal?: AbortSignal): Promise<void> {
+    const ids = entries.map((entry) => entry.id);
+    const loads = this.decode(entries);
+    if (loads.length > 0 && (await this.insert(loads, ids, ids, signal)) === "rejected") {
+      await this.isolateRejected(loads, ids, signal);
     }
 
     await this.retry("ack", ids, signal, () => this.stream.ack(ids));
     this.metrics.entries.inc(ids.length);
+    await this.stream.trim().catch((error: unknown) => this.log(`${this.stream.key} trim failed`, error));
   }
 
-  private async retry(stage: string, ids: string[], signal: AbortSignal | undefined, action: () => Promise<void>): Promise<void> {
+  private decode(entries: StreamEntry[]): Load[] {
+    const loads: Load[] = [];
+    for (const entry of entries) {
+      const batch = decodeBatch(entry.batch);
+      if (batch === null) {
+        this.metrics.malformed.inc();
+      } else if (batch.events.length > 0) {
+        loads.push({ entry, rows: toRows(batch) });
+      }
+    }
+
+    return loads;
+  }
+
+  private async insert(loads: Load[], tokenIds: string[], heldIds: string[], signal?: AbortSignal): Promise<InsertResult> {
+    const rows = loads.flatMap((load) => load.rows);
+    const token = dedupToken(this.stream.key, tokenIds);
+    const result = await this.retry("insert", heldIds, signal, async () => {
+      const stopTimer = this.metrics.insertSeconds.startTimer();
+      const outcome = await this.sink.insert(rows, token);
+      stopTimer();
+      return outcome;
+    });
+
+    if (result === "stored") {
+      this.metrics.rows.inc(rows.length);
+    }
+
+    return result;
+  }
+
+  private async isolateRejected(loads: Load[], heldIds: string[], signal?: AbortSignal): Promise<void> {
+    for (const load of loads) {
+      const alone = loads.length === 1;
+      if (alone || (await this.insert([load], [load.entry.id], heldIds, signal)) === "rejected") {
+        await this.retry("set_aside", heldIds, signal, () => this.stream.setAside(load.entry));
+        this.metrics.rejected.inc();
+        this.log(`${this.stream.key} set aside entry ${load.entry.id}`, "the database refused its rows");
+      }
+    }
+  }
+
+  private async retry<T>(stage: string, heldIds: string[], signal: AbortSignal | undefined, action: () => Promise<T>): Promise<T> {
     for (let attempt = 0; ; attempt++) {
       try {
-        await action();
-        return;
+        return await action();
       } catch (error) {
         this.metrics.failures.labels(stage).inc();
         this.log(`${this.stream.key} ${stage} failed (attempt ${attempt + 1})`, error);
@@ -196,7 +221,7 @@ export class ShardWorker {
         }
 
         this.beatAt = this.now();
-        await this.stream.touch(ids).catch((touchError: unknown) => this.log(`${this.stream.key} touch failed`, touchError));
+        await this.stream.touch(heldIds).catch((touchError: unknown) => this.log(`${this.stream.key} touch failed`, touchError));
       }
     }
   }

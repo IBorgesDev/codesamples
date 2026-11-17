@@ -2,32 +2,28 @@
 
 local players = game:GetService("Players")
 local replicated_storage = game:GetService("ReplicatedStorage")
-local run_service = game:GetService("RunService")
 
+local every = require(script.Parent.Parent.util.every)
 local gift = require(script.Parent.gift)
 local guard = require(script.Parent.Parent.net.guard)
 local inbox = require(script.Parent.inbox)
 local net = require(replicated_storage.Shared.net)
 local profiles = require(script.Parent.Parent.data.profiles)
 local records = require(script.Parent.records)
-local trace = require(replicated_storage.Shared.util.trace)
-local tuning = require(replicated_storage.Shared.config.tuning)
+local store_name = require(script.Parent.Parent.data.store_name)
+local trace = require(script.Parent.Parent.util.trace)
+local tuning = require(script.Parent.Parent.config.tuning)
 local types = require(script.Parent.types)
 
-const CONFIG = tuning.trade
-const MAX_USER_ID = 2 ^ 53
+const CONFIG = tuning.gift
 
 local gift_service = {}
 
 local delivering: { [number]: boolean } = {}
-local listeners: { (Player, number, number) -> () } = {}
-local inbox_store = inbox.open(
-    if run_service:IsStudio() then CONFIG.inbox_store .. tuning.profiles.studio_suffix else CONFIG.inbox_store,
-    CONFIG.inbox_cap
-)
+local inbox_store = inbox.open(store_name(CONFIG.inbox_store), CONFIG.inbox_cap)
 
-function gift_service.on_sent(listener: (Player, number, number) -> ())
-    table.insert(listeners, listener)
+local function has_budget(): boolean
+    return records.budget() >= CONFIG.min_budget
 end
 
 local function durable(ids: { string }): (types.Data) -> boolean
@@ -44,11 +40,11 @@ end
 
 local function deliver(account: types.Account, send: gift.Send): number
     local ids = gift.pending(account.data)
-    if #ids == 0 or records.budget() < CONFIG.gift_min_budget or not account.persist(durable(ids)) then
+    if #ids == 0 or not has_budget() or not account.persist(durable(ids)) then
         return 0
     end
 
-    return gift.deliver(account.data, ids, send, account.active)
+    return gift.deliver(account.data, ids, send, account.active, CONFIG.max_sends)
 end
 
 function gift_service.reserved(send: gift.Send): gift.Send
@@ -74,40 +70,44 @@ function gift_service.deliver(account: types.Account, send: gift.Send?): number
     return delivered
 end
 
-function gift_service.send(player: Player, to: number, coins: number, item_ids: { string }): boolean
-    if
-        to == player.UserId
-        or (coins == 0 and #item_ids == 0)
-        or profiles.get(player) == nil
-        or records.budget() < CONFIG.gift_min_budget
-        or profiles.exists(to) ~= true
-    then
-        return false
+local function owned(data: types.Data, item_ids: { string }): types.Items?
+    local items: types.Items = {}
+    for _, item_id in item_ids do
+        local item = data.items[item_id]
+        if item == nil or items[item_id] then
+            return nil
+        end
+
+        items[item_id] = item
     end
 
-    local loaded = profiles.get(player)
-    if loaded == nil then
-        return false
-    end
+    return items
+end
 
-    local data = loaded.account.data
+local function outbox_size(data: types.Data): number
     local queued = 0
     for _ in data.outbox do
         queued += 1
     end
 
-    if queued >= CONFIG.max_outbox then
+    return queued
+end
+
+function gift_service.send(player: Player, to: number, coins: number, item_ids: { string }): boolean
+    if to == player.UserId or (coins == 0 and #item_ids == 0) or profiles.get(player) == nil or not has_budget() then
         return false
     end
 
-    local items: types.Items = {}
-    for _, item_id in item_ids do
-        local item = data.items[item_id]
-        if item == nil or items[item_id] then
-            return false
-        end
+    local recipient_exists = profiles.exists(to)
+    local loaded = profiles.get(player)
+    if recipient_exists ~= true or loaded == nil then
+        return false
+    end
 
-        items[item_id] = item
+    local data = loaded.account.data
+    local items = owned(data, item_ids)
+    if items == nil or outbox_size(data) >= CONFIG.max_outbox then
+        return false
     end
 
     local tx_id = gift.send(data, player.UserId, to, coins, items, os.time())
@@ -117,9 +117,6 @@ function gift_service.send(player: Player, to: number, coins: number, item_ids: 
 
     trace("gift", `{tx_id} to {to}`)
     task.spawn(gift_service.deliver, loaded.account)
-    for _, listener in listeners do
-        task.spawn(listener, player, coins, #item_ids)
-    end
 
     return true
 end
@@ -136,13 +133,16 @@ end
 
 function gift_service.receive(loaded: profiles.Loaded)
     local settled = table.clone(loaded.account.data.gift_seen)
+    local settled_at = -math.huge
     if next(settled) then
         task.spawn(inbox_store.settle, loaded.user_id, settled)
     end
 
     loaded.profile.OnAfterSave:Connect(function(last_saved: types.Data)
-        if not covers(last_saved.gift_seen, settled) then
+        local due = os.clock() - settled_at >= CONFIG.settle_interval
+        if due and has_budget() and not covers(last_saved.gift_seen, settled) then
             settled = table.clone(last_saved.gift_seen)
+            settled_at = os.clock()
             task.spawn(inbox_store.settle, loaded.user_id, settled)
         end
     end)
@@ -157,9 +157,9 @@ function gift_service.receive(loaded: profiles.Loaded)
         processed()
         if is_gift and not save_queued then
             save_queued = true
-            task.delay(CONFIG.inbox_settle_delay, function()
+            task.delay(CONFIG.settle_delay, function()
                 save_queued = false
-                if loaded.profile:IsActive() then
+                if loaded.profile:IsActive() and has_budget() then
                     loaded.profile:Save()
                 end
             end)
@@ -167,12 +167,21 @@ function gift_service.receive(loaded: profiles.Loaded)
     end)
 end
 
+local function resend_pending()
+    for _, player in players:GetPlayers() do
+        local loaded = profiles.get(player)
+        if loaded and next(loaded.account.data.outbox) then
+            task.spawn(gift_service.deliver, loaded.account)
+        end
+    end
+end
+
 function gift_service.start()
     local t = guard.t
-    net.trade.gift:on(guard.handler("trade.gift", guard.limiter(CONFIG.gift_pace), {
-        t.integer(1, MAX_USER_ID),
-        t.integer(0, CONFIG.max_coins_per_side),
-        t.array(t.id, CONFIG.max_items_per_side),
+    net.trade.gift:on(guard.handler("trade.gift", guard.limiter(CONFIG.pace), {
+        t.user_id,
+        t.integer(0, tuning.trade.max_coins_per_side),
+        t.array(t.id, tuning.trade.max_items_per_side),
     }, gift_service.send))
 
     profiles.on_loaded(function(_, loaded)
@@ -180,17 +189,7 @@ function gift_service.start()
         gift_service.deliver(loaded.account)
     end)
 
-    task.spawn(function()
-        while true do
-            task.wait(CONFIG.gift_resend_interval)
-            for _, player in players:GetPlayers() do
-                local loaded = profiles.get(player)
-                if loaded and next(loaded.account.data.outbox) then
-                    task.spawn(gift_service.deliver, loaded.account)
-                end
-            end
-        end
-    end)
+    every("gift resend", CONFIG.resend_interval, resend_pending)
 end
 
 return gift_service

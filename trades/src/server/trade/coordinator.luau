@@ -2,11 +2,14 @@
 
 local memory_store_service = game:GetService("MemoryStoreService")
 local messaging_service = game:GetService("MessagingService")
-local replicated_storage = game:GetService("ReplicatedStorage")
 
-local hash = require(replicated_storage.Shared.util.hash)
+local hash = require(script.Parent.Parent.util.hash)
 local memory_gate = require(script.Parent.Parent.net.memory_gate)
 local negotiation = require(script.Parent.negotiation)
+local store_name = require(script.Parent.Parent.data.store_name)
+local tuning = require(script.Parent.Parent.config.tuning)
+
+const CONFIG = tuning.cross
 
 export type Shared = {
     session: negotiation.Session,
@@ -38,16 +41,6 @@ export type Coordinator = {
     change: (session_id: string, change: Change, closing: boolean?) -> (boolean, Shared?, string?),
     get: (session_id: string) -> (boolean, Shared?),
     send: (server_id: string, message: Message) -> boolean,
-}
-
-export type Options = {
-    map_name: string,
-    maps: number,
-    presence_ttl: number,
-    session_ttl: number,
-    closed_ttl: number,
-    backoff_base: number,
-    backoff_cap: number,
 }
 
 local coordinator = {}
@@ -89,23 +82,24 @@ function coordinator.change_transform(change: Change, result: { why: string? }):
     end
 end
 
-function coordinator.memory_store(options: Options): Coordinator
+function coordinator.memory_store(): Coordinator
+    local map_name = store_name(CONFIG.coordinator_map)
     local maps: { MemoryStoreHashMap } = {}
-    for index = 1, options.maps do
-        maps[index] = memory_store_service:GetHashMap(`{options.map_name}:{index}`)
+    for index = 1, CONFIG.coordinator_maps do
+        maps[index] = memory_store_service:GetHashMap(`{map_name}:{index}`)
     end
 
-    local call = memory_gate.new(options.backoff_base, options.backoff_cap)
+    local call = memory_gate.new(CONFIG.backoff_base, CONFIG.backoff_cap)
 
     local function map(key: string): MemoryStoreHashMap
-        return maps[hash.bucket(key, options.maps)]
+        return maps[hash.bucket(key, CONFIG.coordinator_maps)]
     end
 
     return {
         presence_set = function(user_id, server_id)
             local ok = call(function()
                 local key = `u:{user_id}`
-                map(key):SetAsync(key, server_id, options.presence_ttl)
+                map(key):SetAsync(key, server_id, CONFIG.presence_ttl)
             end)
 
             return ok
@@ -139,14 +133,14 @@ function coordinator.memory_store(options: Options): Coordinator
         create = function(shared)
             local ok = call(function()
                 local key = `s:{shared.session.id}`
-                map(key):SetAsync(key, shared, options.session_ttl)
+                map(key):SetAsync(key, shared, CONFIG.session_ttl)
             end)
 
             return ok
         end,
         change = function(session_id, change, closing)
             local result: { why: string? } = { why = nil }
-            local ttl = if closing then options.closed_ttl else options.session_ttl
+            local ttl = if closing then CONFIG.closed_ttl else CONFIG.session_ttl
             local ok, stored = call(function()
                 local key = `s:{session_id}`
                 return map(key):UpdateAsync(key, coordinator.change_transform(change, result) :: any, ttl)

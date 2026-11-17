@@ -1,8 +1,6 @@
 --!strict
 
-local replicated_storage = game:GetService("ReplicatedStorage")
-
-local tuning = require(replicated_storage.Shared.config.tuning)
+local tuning = require(script.Parent.Parent.config.tuning)
 local types = require(script.Parent.types)
 
 type Item = types.Item
@@ -57,6 +55,14 @@ function negotiation.party(session: Session, user_id: number): Party?
     end
 
     return nil
+end
+
+function negotiation.side(of: Party): types.Side
+    return { user_id = of.user_id, coins = of.coins, items = of.items, ready = false }
+end
+
+local function is_empty(of: Party): boolean
+    return of.coins == 0 and of.count == 0
 end
 
 function negotiation.accept_in(session: Session, user_id: number, now: number): number
@@ -128,6 +134,10 @@ function negotiation.apply(session: Session, user_id: number, op: Op, now: numbe
 
         if me.accepted then
             return false, "unchanged"
+        end
+
+        if is_empty(session.a) and is_empty(session.b) then
+            return false, "empty"
         end
 
         if negotiation.accept_in(session, user_id, now) > 0 then

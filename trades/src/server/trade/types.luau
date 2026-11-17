@@ -40,6 +40,7 @@ export type Outgoing = {
     coins: number,
     items: Items,
     at: number,
+    sends: number?,
 }
 
 export type Data = {

@@ -9,10 +9,11 @@ const SUCCESS_MIN = 200
 const SUCCESS_MAX = 299
 const BAD_REQUEST = 400
 const TOO_LARGE = 413
+const BATCH_PATH = "/v1/batch"
 
 local transport = {}
 
-function transport.classify(status: number): Result
+local function classify(status: number): Result
     if status >= SUCCESS_MIN and status <= SUCCESS_MAX then
         return "ok"
     end
@@ -22,6 +23,15 @@ function transport.classify(status: number): Result
     end
 
     return "retry"
+end
+
+local function retry_after(headers: { [string]: string }): number?
+    local seconds = tonumber(headers["retry-after"] or headers["Retry-After"])
+    if seconds == nil or seconds ~= seconds or seconds < 0 or seconds == math.huge then
+        return nil
+    end
+
+    return seconds
 end
 
 function transport.http(url_secret: string, token_secret: string): Transport?
@@ -37,7 +47,7 @@ function transport.http(url_secret: string, token_secret: string): Transport?
     return function(body)
         local sent, response = pcall(function()
             return http_service:RequestAsync({
-                Url = http_service:GetSecret(url_secret):AddSuffix("/v1/batch") :: any,
+                Url = http_service:GetSecret(url_secret):AddSuffix(BATCH_PATH) :: any,
                 Method = "POST",
                 Headers = {
                     ["Content-Type"] = "application/json",
@@ -51,16 +61,14 @@ function transport.http(url_secret: string, token_secret: string): Transport?
             return "retry", nil
         end
 
-        local headers = response.Headers or {}
-        local retry_after = tonumber(headers["retry-after"] or headers["Retry-After"])
-
-        return transport.classify(response.StatusCode), retry_after
+        return classify(response.StatusCode), retry_after(response.Headers or {})
     end
 end
 
 function transport.echo(write: (string) -> ()): Transport
     return function(body, events)
         write(`{events} events, {#body} bytes`)
+
         return "ok", nil
     end
 end

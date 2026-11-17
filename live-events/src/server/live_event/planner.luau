@@ -1,11 +1,12 @@
 --!strict
 
-local replicated_storage = game:GetService("ReplicatedStorage")
-
-local tuning = require(replicated_storage.Shared.config.tuning)
+local tuning = require(script.Parent.Parent.config.tuning)
 
 const SECONDS_PER_MINUTE = 60
 const UPDATE_RU = 2
+const ENTRY_BASE_BYTES = 71
+const OPTION_BYTES = 24
+const PASS_OVERHEAD_CALLS = 2
 
 local planner = {}
 
@@ -31,6 +32,16 @@ function planner.max_contenders(): number
     return math.max(1, math.floor(store.write_per_key * tuning.platform.safety / (passes * UPDATE_RU)))
 end
 
+function planner.shards(servers: number, options: number): number
+    local config = tuning.live_event
+    local store = tuning.platform.memory_store
+    local bytes = servers * (ENTRY_BASE_BYTES + OPTION_BYTES * options)
+    local by_writes = math.ceil(servers / config.servers_per_shard)
+    local by_bytes = math.ceil(bytes / (store.value_bytes * tuning.platform.safety * config.shard_fill))
+
+    return math.max(1, by_writes, by_bytes)
+end
+
 function planner.replicas(servers: number, max_replicas: number): number
     local polls = per_minute(tuning.live_event.poll_interval + tuning.live_event.flush_jitter / 2)
 
@@ -44,7 +55,7 @@ function planner.poll_interval(servers: number, replicas: number): number
 end
 
 function planner.pass_cost(shards_read: number): number
-    return shards_read + 1 + 1 + UPDATE_RU
+    return shards_read + PASS_OVERHEAD_CALLS + UPDATE_RU
 end
 
 function planner.pass_interval(ccu: number, events: number, shards_read: number?): number
@@ -68,7 +79,7 @@ function planner.root_interval(groups: number, per_group: number): number
     return math.max(step, math.ceil(planner.root_pass_seconds(groups, per_group) / step) * step)
 end
 
-function planner.root_lease(interval: number): number
+function planner.lease(interval: number): number
     local config = tuning.live_event
 
     return math.max(config.lease_seconds, interval * config.lease_passes)

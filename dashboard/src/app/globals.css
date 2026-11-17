@@ -14,12 +14,7 @@
   --series-2: #eb6834;
   --series-3: #1baf7a;
   --series-4: #eda100;
-  --series-5: #e87ba4;
   --track: #cde2fb;
-  --good: #0ca30c;
-  --warning: #fab219;
-  --critical: #d03b3b;
-  --success-ink: #006300;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -37,9 +32,7 @@
     --series-2: #d95926;
     --series-3: #199e70;
     --series-4: #c98500;
-    --series-5: #d55181;
     --track: #184f95;
-    --success-ink: #0ca30c;
   }
 }
 
@@ -57,7 +50,7 @@
 body {
   background: var(--page);
   color: var(--ink);
-  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-family: var(--font-sans);
 }
 
 .tabular {

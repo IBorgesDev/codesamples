@@ -1,4 +1,4 @@
-import { number, numberOrNull, query, text, type QueryRunner, type RowOf } from "./clickhouse.js";
+import { type Fields, number, numberOrNull, query, type QueryRunner, type RowOf, text } from "./clickhouse.js";
 
 const overviewQuery = query(
   `
@@ -38,6 +38,15 @@ const playersQuery = query(
   }),
 );
 
+function tradeFigures(row: Fields) {
+  return {
+    trades: number(row.trades),
+    cross_server: number(row.cross_server),
+    p50: numberOrNull(row.p50),
+    p95: numberOrNull(row.p95),
+  };
+}
+
 const tradeTotalsQuery = query(
   `
   SELECT
@@ -48,12 +57,7 @@ const tradeTotalsQuery = query(
   FROM analytics.events
   WHERE name = 'trade_completed' AND at >= now64(3) - toIntervalMinute({minutes:UInt32})
   `,
-  (row) => ({
-    trades: number(row.trades),
-    cross_server: number(row.cross_server),
-    p50: numberOrNull(row.p50),
-    p95: numberOrNull(row.p95),
-  }),
+  tradeFigures,
 );
 
 const tradeOutcomesQuery = query(
@@ -68,14 +72,9 @@ const tradeOutcomesQuery = query(
   WHERE name = 'trade_completed' AND at >= now64(3) - toIntervalMinute({minutes:UInt32})
   GROUP BY outcome
   ORDER BY trades DESC, outcome
+  LIMIT 20
   `,
-  (row) => ({
-    outcome: text(row.outcome),
-    trades: number(row.trades),
-    cross_server: number(row.cross_server),
-    p50: numberOrNull(row.p50),
-    p95: numberOrNull(row.p95),
-  }),
+  (row) => ({ outcome: text(row.outcome), ...tradeFigures(row) }),
 );
 
 export type OverviewRow = RowOf<typeof overviewQuery>;

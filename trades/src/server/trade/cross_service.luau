@@ -6,19 +6,23 @@ local replicated_storage = game:GetService("ReplicatedStorage")
 
 local coordinator = require(script.Parent.coordinator)
 local cross = require(script.Parent.cross)
+local every = require(script.Parent.Parent.util.every)
 local guard = require(script.Parent.Parent.net.guard)
+local invites = require(script.Parent.invites)
 local negotiation = require(script.Parent.negotiation)
 local net = require(replicated_storage.Shared.net)
 local profiles = require(script.Parent.Parent.data.profiles)
+local protocol = require(script.Parent.protocol)
 local records = require(script.Parent.records)
 local server_id = require(script.Parent.Parent.net.identity)
-local stats = require(script.Parent.Parent.dev.stats)
-local trace = require(replicated_storage.Shared.util.trace)
-local tuning = require(replicated_storage.Shared.config.tuning)
+local stat = require(script.Parent.Parent.dev.stats)
+local trace = require(script.Parent.Parent.util.trace)
+local tuning = require(script.Parent.Parent.config.tuning)
 local types = require(script.Parent.types)
 local view = require(script.Parent.view)
 
-const CONFIG = tuning.trade
+const TRADE = tuning.trade
+const CONFIG = tuning.cross
 
 type Shared = coordinator.Shared
 type Status = view.Status
@@ -31,10 +35,13 @@ type Entry = {
     shared: Shared?,
     status: Status,
     reason: string?,
-    tx_id: string?,
+    shown_version: number,
+    shown_at: number,
+    lock_paid: boolean,
     started: number?,
-    busy: boolean,
-    due: number,
+    stepping: boolean,
+    cancelling: boolean,
+    next_step_at: number,
     closes_at: number?,
 }
 
@@ -42,18 +49,18 @@ export type Context = {
     ports: types.Ports,
     coord: coordinator.Coordinator,
     busy: (Player) -> boolean,
-    emit: (kind: string, tx_id: string?, reason: string?, seconds: number, player: Player) -> (),
+    lock_limiter: guard.Limiter,
 }
 
 local cross_service = {}
 
 local entries: { [Player]: Entry } = {}
 local by_session: { [string]: Entry } = {}
-local outgoing: { [Player]: { to: number, at: number } } = {}
-local invites: { [Player]: { [number]: { server: string, at: number } } } = {}
+local sent_invites: { [Player]: { to: number, at: number } } = {}
+local received_invites: invites.Book<string> = invites.book(TRADE.max_invites, TRADE.invite_timeout)
 local joining: { [Player]: boolean } = {}
 local last_answer: { [Player]: number } = {}
-local limiter = guard.limiter(CONFIG.cross_pace)
+local limiter = guard.limiter(CONFIG.pace)
 local context: Context
 
 local function wall_now(): number
@@ -62,12 +69,27 @@ end
 
 local function push(entry: Entry)
     local shared = entry.shared
-    if shared and entry.player.Parent == players then
-        net.trade.view:set(
-            entry.player,
-            view.of(entry.id, entry.status, entry.reason, shared.session, entry.player.UserId, wall_now())
-        )
+    if shared == nil or entry.player.Parent ~= players then
+        return
     end
+
+    if shared.session.version ~= entry.shown_version then
+        entry.shown_version = shared.session.version
+        entry.shown_at = os.clock()
+    end
+
+    net.trade.view:set(
+        entry.player,
+        view.of(
+            entry.id,
+            entry.status,
+            entry.reason,
+            shared.session,
+            entry.player.UserId,
+            wall_now(),
+            os.clock() - entry.shown_at
+        )
+    )
 end
 
 local function hint(entry: Entry)
@@ -88,15 +110,13 @@ local function close(entry: Entry, status: Status, reason: string?)
 
     entry.status = status
     entry.reason = reason
-    entry.closes_at = os.clock() + CONFIG.close_after
+    entry.closes_at = os.clock() + TRADE.close_after
     push(entry)
     hint(entry)
 
     local started = entry.started
     if started then
-        local seconds = os.clock() - started
-        context.emit(status, entry.tx_id, reason, seconds, entry.player)
-        stats("trade.cross_last_seconds", math.round(seconds * 1000) / 1000)
+        stat("trade.cross_last_seconds", math.round((os.clock() - started) * 1000) / 1000)
     end
 
     trace("trade", `cross {entry.id} {entry.role} {status} {reason or ""}`)
@@ -111,10 +131,13 @@ local function add(player: Player, session_id: string, role: types.Role, peer_se
         shared = shared,
         status = "negotiating",
         reason = nil,
-        tx_id = nil,
+        shown_version = 0,
+        shown_at = -math.huge,
+        lock_paid = false,
         started = nil,
-        busy = false,
-        due = 0,
+        stepping = false,
+        cancelling = false,
+        next_step_at = 0,
         closes_at = nil,
     }
     entries[player] = entry
@@ -134,92 +157,84 @@ local function remove(entry: Entry)
     end
 end
 
-local function terminal(result: string?): boolean
-    return result ~= nil and result ~= "open" and result ~= "pending" and result ~= "waiting"
+local function has_budget(): boolean
+    return records.budget() >= TRADE.min_update_budget
 end
 
-local function lock(entry: Entry, account: types.Account)
-    if records.budget() < CONFIG.min_update_budget then
-        return
+local function pays_for_lock(entry: Entry): boolean
+    if not entry.lock_paid then
+        entry.lock_paid = context.lock_limiter:take(entry.player)
     end
 
-    local tx_id = http_service:GenerateGUID(false)
+    return entry.lock_paid
+end
+
+local function lock(entry: Entry, account: types.Account): (string?, string?)
+    if not (has_budget() and pays_for_lock(entry)) then
+        return nil, nil
+    end
+
     entry.status = "locking"
     entry.started = os.clock()
     push(entry)
 
+    local tx_id = http_service:GenerateGUID(false)
     local result, why = cross.commit(context.coord, context.ports, entry.id, account, tx_id, wall_now())
     if result == "waiting" then
         entry.status = "negotiating"
         entry.started = nil
-        return
+        return nil, nil
     end
 
-    entry.tx_id = tx_id
     hint(entry)
-    if terminal(result) then
-        close(entry, view.status_of(result), why)
-    end
+
+    return result, why
 end
 
-local function drive_a(entry: Entry, shared: Shared, account: types.Account)
-    if shared.outcome ~= nil then
-        cross.resume(context.coord, context.ports, shared, account)
-        close(entry, view.status_of(shared.outcome), shared.reason)
-        return
-    end
-
+local function drive_a(entry: Entry, shared: Shared, account: types.Account): (string?, string?)
     if shared.tx_id == nil then
         local lock_at = shared.session.lock_at
         if lock_at and wall_now() >= lock_at then
-            lock(entry, account)
+            return lock(entry, account)
         end
 
-        return
+        return nil, nil
     end
 
     entry.status = "locking"
     local locked_for = wall_now() - (shared.locked_at or 0)
-    if not shared.opened or locked_for >= CONFIG.record_timeout then
-        local result = cross.resume(context.coord, context.ports, shared, account)
-        if terminal(result) then
-            close(entry, view.status_of(result :: string), nil)
-        end
+    if not shared.opened or locked_for >= TRADE.record_timeout then
+        return cross.resume(context.coord, context.ports, shared, account), nil
     end
+
+    return nil, nil
 end
 
-local function drive_b(entry: Entry, shared: Shared, account: types.Account)
+local function drive_b(entry: Entry, shared: Shared, account: types.Account): string?
     local tx_id = shared.tx_id
     if tx_id == nil then
-        return
+        return nil
     end
 
     entry.status = "locking"
-    entry.tx_id = tx_id
     entry.started = entry.started or os.clock()
-
-    if shared.outcome ~= nil then
-        cross.resume(context.coord, context.ports, shared, account)
-        close(entry, view.status_of(shared.outcome), shared.reason)
-        return
+    if not has_budget() then
+        return nil
     end
 
-    if records.budget() < CONFIG.min_update_budget then
-        return
-    end
-
-    local result: string? = nil
     if account.data.escrow[tx_id] then
-        result = cross.resume(context.coord, context.ports, shared, account)
-    elseif shared.opened then
-        result = cross.prepare(context.coord, context.ports, shared, account)
-    elseif wall_now() - (shared.locked_at or 0) >= CONFIG.persist_timeout + CONFIG.lock_grace then
-        result = cross.abandon(context.coord, context.ports, shared, "a_silent")
+        return cross.resume(context.coord, context.ports, shared, account)
     end
 
-    if terminal(result) then
-        close(entry, view.status_of(result :: string), nil)
+    if shared.opened then
+        return if pays_for_lock(entry) then cross.prepare(context.coord, context.ports, shared, account) else nil
     end
+
+    if wall_now() - (shared.locked_at or 0) >= TRADE.persist_timeout + CONFIG.lock_grace then
+        return cross.abandon(context.coord, context.ports, shared, "a_silent")
+    end
+
+    return nil
 end
 
 local function drive(entry: Entry)
@@ -245,32 +260,41 @@ local function drive(entry: Entry)
         return
     end
 
-    if entry.role == "a" then
-        drive_a(entry, current, loaded.account)
-    else
-        drive_b(entry, current, loaded.account)
+    if current.outcome ~= nil then
+        cross.resume(context.coord, context.ports, current, loaded.account)
+        close(entry, view.status_of(current.outcome), current.reason)
+        return
     end
 
-    if entry.closes_at == nil then
-        push(entry)
-        local lock_at = current.session.lock_at
-        if entry.role == "a" and current.tx_id == nil and lock_at then
-            entry.due = math.min(entry.due, os.clock() + math.max(0, lock_at - wall_now()))
-        end
+    local result: string?, why: string? = nil, nil
+    if entry.role == "a" then
+        result, why = drive_a(entry, current, loaded.account)
+    else
+        result = drive_b(entry, current, loaded.account)
+    end
+
+    if protocol.decided(result) then
+        close(entry, view.status_of(result :: string), why)
+        return
+    end
+
+    push(entry)
+    local lock_at = current.session.lock_at
+    if entry.role == "a" and current.tx_id == nil and lock_at then
+        entry.next_step_at = math.min(entry.next_step_at, os.clock() + math.max(0, lock_at - wall_now()))
     end
 end
 
 local function step(entry: Entry)
-    entry.due = os.clock() + CONFIG.remote_poll_interval
+    entry.next_step_at = os.clock() + CONFIG.remote_poll_interval
     local ok, problem = pcall(function()
         drive(entry)
     end)
-
     if not ok then
         trace("trade", `cross {entry.id} step failed: {problem}`)
     end
 
-    entry.busy = false
+    entry.stepping = false
 end
 
 local function tick()
@@ -280,27 +304,11 @@ local function tick()
             if now >= entry.closes_at then
                 remove(entry)
             end
-        elseif not entry.busy and now >= entry.due then
-            entry.busy = true
+        elseif not entry.stepping and now >= entry.next_step_at then
+            entry.stepping = true
             task.spawn(step, entry)
         end
     end
-end
-
-local function pending_invites(target: Player, now: number): { [number]: { server: string, at: number } }
-    local list = invites[target]
-    if list == nil then
-        list = {}
-        invites[target] = list
-    end
-
-    for from, invite in list do
-        if now - invite.at > CONFIG.invite_timeout then
-            list[from] = nil
-        end
-    end
-
-    return list
 end
 
 local function on_invite(message: coordinator.Message)
@@ -314,19 +322,9 @@ local function on_invite(message: coordinator.Message)
         return
     end
 
-    local now = os.clock()
-    local list = pending_invites(target, now)
-    local count = 0
-    for _ in list do
-        count += 1
+    if received_invites.offer(target, from, server, os.clock()) then
+        net.trade.invited:fire(target, from)
     end
-
-    if list[from] or count >= CONFIG.max_invites then
-        return
-    end
-
-    list[from] = { server = server, at = now }
-    net.trade.invited:fire(target, from)
 end
 
 local function on_accepted(message: coordinator.Message)
@@ -336,17 +334,17 @@ local function on_accepted(message: coordinator.Message)
     end
 
     local inviter = players:GetPlayerByUserId(to)
-    local pending = if inviter then outgoing[inviter] else nil
+    local sent = if inviter then sent_invites[inviter] else nil
     if
         inviter
-        and pending
-        and pending.to == from
-        and os.clock() - pending.at <= CONFIG.invite_timeout
+        and sent
+        and sent.to == from
+        and os.clock() - sent.at <= TRADE.invite_timeout
         and not context.busy(inviter)
-        and entries[inviter] == nil
+        and not cross_service.busy(inviter)
         and profiles.get(inviter) ~= nil
     then
-        outgoing[inviter] = nil
+        sent_invites[inviter] = nil
         add(inviter, session_id, "a", server, nil)
         return
     end
@@ -363,9 +361,13 @@ local function on_message(message: coordinator.Message)
     elseif message.kind == "changed" and type(message.session) == "string" then
         local entry = by_session[message.session]
         if entry then
-            entry.due = 0
+            entry.next_step_at = 0
         end
     end
+end
+
+local function cancel_remote(session_id: string, user_id: number)
+    cross.apply(context.coord, session_id, user_id, { kind = "cancel" }, wall_now())
 end
 
 function cross_service.busy(player: Player): boolean
@@ -373,7 +375,7 @@ function cross_service.busy(player: Player): boolean
 end
 
 function cross_service.invite(player: Player, target_id: number): boolean
-    outgoing[player] = { to = target_id, at = os.clock() }
+    sent_invites[player] = { to = target_id, at = os.clock() }
     task.spawn(function()
         local ok, server = context.coord.presence_get(target_id)
         if ok and server ~= nil and server ~= server_id then
@@ -384,19 +386,17 @@ function cross_service.invite(player: Player, target_id: number): boolean
     return true
 end
 
-function cross_service.answer(player: Player, from_id: number, accept: boolean): boolean?
-    local list = invites[player]
-    local invite = if list then list[from_id] else nil
-    if list == nil or invite == nil then
-        return nil
-    end
+function cross_service.invited(player: Player, from_id: number): boolean
+    return received_invites.peek(player, from_id, os.clock())
+end
 
-    list[from_id] = nil
+function cross_service.answer(player: Player, from_id: number, accept: boolean): boolean
     local now = os.clock()
+    local inviter_server = received_invites.take(player, from_id, now)
     if
-        not accept
-        or now - invite.at > CONFIG.invite_timeout
-        or now - (last_answer[player] or -math.huge) < CONFIG.cross_answer_cooldown
+        inviter_server == nil
+        or not accept
+        or now - (last_answer[player] or -math.huge) < CONFIG.answer_cooldown
         or context.busy(player)
         or cross_service.busy(player)
         or profiles.get(player) == nil
@@ -406,7 +406,8 @@ function cross_service.answer(player: Player, from_id: number, accept: boolean):
 
     last_answer[player] = now
     local session_id = http_service:GenerateGUID(false)
-    local shared = cross.new(session_id, from_id, player.UserId, invite.server, server_id)
+    local user_id = player.UserId
+    local shared = cross.new(session_id, from_id, user_id, inviter_server, server_id)
     joining[player] = true
     local created = context.coord.create(shared)
     joining[player] = nil
@@ -414,39 +415,51 @@ function cross_service.answer(player: Player, from_id: number, accept: boolean):
         return false
     end
 
-    if player.Parent ~= players or profiles.get(player) == nil then
-        local user_id = player.UserId
-        task.spawn(function()
-            cross.apply(context.coord, session_id, user_id, { kind = "cancel" }, wall_now())
-        end)
+    if player.Parent ~= players or profiles.get(player) == nil or context.busy(player) or entries[player] then
+        task.spawn(cancel_remote, session_id, user_id)
         return false
     end
 
-    add(player, session_id, "b", invite.server, shared)
+    add(player, session_id, "b", inviter_server, shared)
     context.coord.send(
-        invite.server,
-        { kind = "accepted", session = session_id, from = player.UserId, to = from_id, server = server_id }
+        inviter_server,
+        { kind = "accepted", session = session_id, from = user_id, to = from_id, server = server_id }
     )
 
     return true
 end
 
-function cross_service.apply(player: Player, op: negotiation.Op): boolean?
+local function may_apply(entry: Entry, op: negotiation.Op): boolean
+    if entry.status ~= "negotiating" or entry.closes_at or entry.cancelling then
+        return false
+    end
+
+    if op.kind == "cancel" then
+        return true
+    end
+
+    if op.kind == "accept" and os.clock() - entry.shown_at < TRADE.accept_delay then
+        return false
+    end
+
+    return limiter:take(entry.player)
+end
+
+function cross_service.apply(player: Player, op: negotiation.Op): boolean
     local entry = entries[player]
-    if entry == nil then
-        return nil
-    end
-
-    if entry.status ~= "negotiating" or entry.closes_at then
+    if entry == nil or not may_apply(entry, op) then
         return false
     end
 
-    if op.kind ~= "cancel" and not limiter:take(player) then
-        return false
-    end
-
+    entry.cancelling = op.kind == "cancel"
     local ok, shared = cross.apply(context.coord, entry.id, player.UserId, op, wall_now())
+    entry.cancelling = false
     if ok and shared then
+        if op.kind ~= "accept" and op.kind ~= "cancel" then
+            entry.shown_version = shared.session.version
+            entry.shown_at = -math.huge
+        end
+
         observe(entry, shared)
         hint(entry)
         if shared.session.state == "cancelled" then
@@ -457,6 +470,31 @@ function cross_service.apply(player: Player, op: negotiation.Op): boolean?
     end
 
     return ok
+end
+
+local function leave(player: Player)
+    received_invites.forget(player)
+    sent_invites[player] = nil
+    joining[player] = nil
+    last_answer[player] = nil
+    local entry = entries[player]
+    if entry then
+        remove(entry)
+        local shared = entry.shared
+        if entry.status == "negotiating" and entry.closes_at == nil then
+            task.spawn(function()
+                cancel_remote(entry.id, player.UserId)
+                hint(entry)
+            end)
+        elseif entry.status == "locking" and shared and entry.closes_at == nil then
+            task.spawn(function()
+                cross.abandon(context.coord, context.ports, shared, `{entry.role}_left`)
+                hint(entry)
+            end)
+        end
+    end
+
+    task.spawn(context.coord.presence_clear, player.UserId, server_id)
 end
 
 local function subscribe()
@@ -480,40 +518,10 @@ function cross_service.start(new_context: Context)
         context.coord.presence_set(player.UserId, server_id)
     end)
 
-    players.PlayerRemoving:Connect(function(player)
-        invites[player] = nil
-        outgoing[player] = nil
-        joining[player] = nil
-        last_answer[player] = nil
-        local entry = entries[player]
-        if entry then
-            remove(entry)
-            if entry.status == "negotiating" and entry.closes_at == nil then
-                task.spawn(function()
-                    cross.apply(context.coord, entry.id, player.UserId, { kind = "cancel" }, wall_now())
-                    hint(entry)
-                end)
-            end
-        end
-
-        task.spawn(context.coord.presence_clear, player.UserId, server_id)
-    end)
-
+    players.PlayerRemoving:Connect(leave)
     task.spawn(subscribe)
-
-    task.spawn(function()
-        while true do
-            task.wait(CONFIG.tick_interval)
-            tick()
-        end
-    end)
-
-    task.spawn(function()
-        while true do
-            task.wait(CONFIG.presence_refresh)
-            refresh_presence()
-        end
-    end)
+    every("cross trade tick", TRADE.tick_interval, tick)
+    every("presence refresh", CONFIG.presence_refresh, refresh_presence)
 end
 
 return cross_service

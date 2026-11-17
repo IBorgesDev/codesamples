@@ -6,28 +6,31 @@ export type ClickHouseConfig = {
   user: string;
   password: string;
   timeoutMs: number;
+  maxResultRows: number;
 };
 
-export type IngestConfig = {
+type SharedConfig = {
   port: number;
   redisUrl: string;
-  serverToken: string;
-  readToken: string;
-  schemaPath: string;
   streamShards: number;
-  maxBacklog: number;
-  dedupeTtlSeconds: number;
-  retryAfterSeconds: number;
-  eventMaxAgeSeconds: number;
-  eventMaxAheadSeconds: number;
-  statsMaxMinutes: number;
   clickhouse: ClickHouseConfig;
 };
 
-export type WorkerConfig = {
-  port: number;
-  redisUrl: string;
-  streamShards: number;
+export type IngestConfig = SharedConfig & {
+  serverToken: string;
+  readToken: string;
+  schemaPath: string;
+  maxBacklog: number;
+  backlogRefreshMs: number;
+  dedupeTtlSeconds: number;
+  retryAfterSeconds: number;
+  requestTimeoutMs: number;
+  eventMaxAgeSeconds: number;
+  eventMaxAheadSeconds: number;
+  statsMaxMinutes: number;
+};
+
+export type WorkerConfig = SharedConfig & {
   consumer: string;
   readCount: number;
   blockMs: number;
@@ -35,10 +38,13 @@ export type WorkerConfig = {
   reclaimEveryMs: number;
   backoffBaseMs: number;
   backoffMaxMs: number;
-  clickhouse: ClickHouseConfig;
+  rejectedKept: number;
+  staleAfterMs: number;
+  stopGraceMs: number;
 };
 
 const DEFAULT_SCHEMA_PATH = fileURLToPath(new URL("../../schema/events.json", import.meta.url));
+const MIN_TOKEN_CHARS = 32;
 
 function required(name: string): string {
   const value = process.env[name];
@@ -49,7 +55,16 @@ function required(name: string): string {
   return value;
 }
 
-function text(name: string, fallback: string): string {
+function token(name: string): string {
+  const value = required(name);
+  if (value.length < MIN_TOKEN_CHARS) {
+    throw new Error(`${name} must have at least ${MIN_TOKEN_CHARS} characters`);
+  }
+
+  return value;
+}
+
+function optional(name: string, fallback: string): string {
   return process.env[name] || fallback;
 }
 
@@ -67,48 +82,57 @@ function integer(name: string, fallback: number, minimum = 1): number {
   return value;
 }
 
-function clickhouse(): ClickHouseConfig {
+function shared(): SharedConfig {
   return {
-    url: text("CLICKHOUSE_URL", "http://localhost:8123"),
-    user: text("CLICKHOUSE_USER", "default"),
-    password: process.env.CLICKHOUSE_PASSWORD ?? "",
-    timeoutMs: integer("CLICKHOUSE_TIMEOUT_MS", 10_000),
+    port: integer("PORT", 8080),
+    redisUrl: required("REDIS_URL"),
+    streamShards: integer("ANALYTICS_STREAM_SHARDS", 4),
+    clickhouse: {
+      url: optional("CLICKHOUSE_URL", "http://localhost:8123"),
+      user: required("CLICKHOUSE_USER"),
+      password: required("CLICKHOUSE_PASSWORD"),
+      timeoutMs: integer("CLICKHOUSE_TIMEOUT_MS", 10_000),
+      maxResultRows: integer("CLICKHOUSE_MAX_RESULT_ROWS", 100_000),
+    },
   };
 }
 
 export function loadIngestConfig(): IngestConfig {
   const config: IngestConfig = {
-    port: integer("PORT", 8080),
-    redisUrl: required("REDIS_URL"),
-    serverToken: required("ANALYTICS_SERVER_TOKEN"),
-    readToken: required("ANALYTICS_READ_TOKEN"),
-    schemaPath: text("ANALYTICS_SCHEMA_PATH", DEFAULT_SCHEMA_PATH),
-    streamShards: integer("ANALYTICS_STREAM_SHARDS", 4),
+    ...shared(),
+    serverToken: token("ANALYTICS_SERVER_TOKEN"),
+    readToken: token("ANALYTICS_READ_TOKEN"),
+    schemaPath: optional("ANALYTICS_SCHEMA_PATH", DEFAULT_SCHEMA_PATH),
     maxBacklog: integer("ANALYTICS_MAX_BACKLOG", 20_000),
+    backlogRefreshMs: integer("ANALYTICS_BACKLOG_REFRESH_MS", 1_000),
     dedupeTtlSeconds: integer("ANALYTICS_DEDUPE_TTL_SECONDS", 3_600),
     retryAfterSeconds: integer("ANALYTICS_RETRY_AFTER_SECONDS", 5),
+    requestTimeoutMs: integer("ANALYTICS_REQUEST_TIMEOUT_MS", 15_000),
     eventMaxAgeSeconds: integer("ANALYTICS_EVENT_MAX_AGE_SECONDS", 86_400),
     eventMaxAheadSeconds: integer("ANALYTICS_EVENT_MAX_AHEAD_SECONDS", 300),
     statsMaxMinutes: integer("ANALYTICS_STATS_MAX_MINUTES", 1_440),
-    clickhouse: clickhouse(),
   };
+
+  if (config.serverToken === config.readToken) {
+    throw new Error("ANALYTICS_SERVER_TOKEN and ANALYTICS_READ_TOKEN must differ, so a reader can never write");
+  }
 
   return config;
 }
 
 export function loadWorkerConfig(): WorkerConfig {
   const config: WorkerConfig = {
-    port: integer("PORT", 8080),
-    redisUrl: required("REDIS_URL"),
-    streamShards: integer("ANALYTICS_STREAM_SHARDS", 4),
-    consumer: text("ANALYTICS_WORKER_CONSUMER", hostname()),
+    ...shared(),
+    consumer: optional("ANALYTICS_WORKER_CONSUMER", hostname()),
     readCount: integer("ANALYTICS_WORKER_READ_COUNT", 200),
     blockMs: integer("ANALYTICS_WORKER_BLOCK_MS", 1_000),
     claimIdleMs: integer("ANALYTICS_WORKER_CLAIM_IDLE_MS", 60_000),
     reclaimEveryMs: integer("ANALYTICS_WORKER_RECLAIM_EVERY_MS", 15_000),
     backoffBaseMs: integer("ANALYTICS_WORKER_BACKOFF_BASE_MS", 250),
     backoffMaxMs: integer("ANALYTICS_WORKER_BACKOFF_MAX_MS", 15_000),
-    clickhouse: clickhouse(),
+    rejectedKept: integer("ANALYTICS_WORKER_REJECTED_KEPT", 10_000),
+    staleAfterMs: integer("ANALYTICS_WORKER_STALE_AFTER_MS", 60_000),
+    stopGraceMs: integer("ANALYTICS_WORKER_STOP_GRACE_MS", 10_000),
   };
 
   if ((config.backoffMaxMs + config.clickhouse.timeoutMs) * 2 > config.claimIdleMs) {

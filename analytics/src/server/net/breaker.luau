@@ -1,25 +1,23 @@
 --!strict
 
-export type State = "closed" | "open" | "half_open"
+type State = "closed" | "open" | "half_open"
 
 export type Breaker = {
     allow: (self: Breaker) -> boolean,
     success: (self: Breaker) -> (),
     failure: (self: Breaker) -> (),
-    state: (self: Breaker) -> State,
 }
 
 local breaker = {}
 
-function breaker.new(failures: number, cooldown: number, clock: (() -> number)?): Breaker
-    local now = clock or os.clock
+function breaker.new(failures: number, cooldown: number): Breaker
     local current: State = "closed"
     local consecutive = 0
     local opened_at = 0
     local self = {}
 
     function self.allow(_): boolean
-        if current == "open" and now() - opened_at >= cooldown then
+        if current == "open" and os.clock() - opened_at >= cooldown then
             current = "half_open"
         end
 
@@ -35,12 +33,8 @@ function breaker.new(failures: number, cooldown: number, clock: (() -> number)?)
         consecutive += 1
         if current == "half_open" or consecutive >= failures then
             current = "open"
-            opened_at = now()
+            opened_at = os.clock()
         end
-    end
-
-    function self.state(_): State
-        return current
     end
 
     return self :: any

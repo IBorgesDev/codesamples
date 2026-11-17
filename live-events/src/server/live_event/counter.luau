@@ -36,10 +36,6 @@ function counter.add(entry: Entry, option: string, amount: number)
     entry.plus[option] = (entry.plus[option] or 0) + amount
 end
 
-function counter.retract(entry: Entry, option: string, amount: number)
-    entry.minus[option] = (entry.minus[option] or 0) + amount
-end
-
 local function covers(a: Tally, b: Tally): boolean
     for option, value in b do
         if value > (a[option] or 0) then

@@ -1,11 +1,9 @@
 import { loadDashboard } from "@/lib/sources";
-import { RANGES, type Range } from "@/lib/types";
-
-const DEFAULT_RANGE: Range = 60;
+import { DEFAULT_RANGE, RANGES, type Range } from "@/lib/types";
 
 function rangeFrom(value: string | null): Range {
   const parsed = Number(value);
-  return (RANGES as readonly number[]).includes(parsed) ? (parsed as Range) : DEFAULT_RANGE;
+  return RANGES.find((range) => range === parsed) ?? DEFAULT_RANGE;
 }
 
 export async function GET(request: Request) {

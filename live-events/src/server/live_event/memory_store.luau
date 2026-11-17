@@ -4,7 +4,8 @@ local memory_store_service = game:GetService("MemoryStoreService")
 local messaging_service = game:GetService("MessagingService")
 
 local memory_gate = require(script.Parent.Parent.net.memory_gate)
-local stats = require(script.Parent.Parent.dev.stats)
+local parse = require(script.Parent.parse)
+local stat = require(script.Parent.Parent.dev.stats)
 local types = require(script.Parent.types)
 
 export type Options = {
@@ -23,7 +24,7 @@ end
 function memory_store.ports(options: Options): types.Ports
     local maps: { [string]: MemoryStoreHashMap } = {}
     local call = memory_gate.new(options.backoff_base, options.backoff_cap, function(message)
-        stats("live.memory_store_error", message)
+        stat("live.memory_store_error", message)
     end)
 
     local function map(name: string): MemoryStoreHashMap
@@ -38,12 +39,13 @@ function memory_store.ports(options: Options): types.Ports
         return created
     end
 
-    local function read_many(
+    local function read_many<T>(
         hash_map: MemoryStoreHashMap,
         keys: { number },
-        key_name: (number) -> string
-    ): (boolean, { [number]: any }?)
-        local out: { [number]: any } = {}
+        key_name: (number) -> string,
+        parsed: (unknown) -> T?
+    ): (boolean, { [number]: T }?)
+        local out: { [number]: T } = {}
         local failed = false
         local cursor = 0
         local workers = math.min(options.read_parallelism, #keys)
@@ -67,7 +69,7 @@ function memory_store.ports(options: Options): types.Ports
                         break
                     end
 
-                    out[key] = value
+                    out[key] = parsed(value) :: T
                 end
 
                 active -= 1
@@ -93,51 +95,64 @@ function memory_store.ports(options: Options): types.Ports
         return `p:{group}`
     end
 
+    local function group_map(event_id: string, group: number): MemoryStoreHashMap
+        return map(`live:{event_id}:g{group}`)
+    end
+
+    local function root_map(event_id: string): MemoryStoreHashMap
+        return map(`live:{event_id}:root`)
+    end
+
+    local function meta_map(event_id: string): MemoryStoreHashMap
+        return map(`live:{event_id}:meta`)
+    end
+
     local shards: types.ShardStore = {
         update = function(event_id, group, shard, transform)
             local ok = call(function()
-                map(`live:{event_id}:g{group}`):UpdateAsync(shard_key(shard), transform :: any, options.expiration)
+                group_map(event_id, group):UpdateAsync(shard_key(shard), function(current: unknown)
+                    return transform(parse.shard(current))
+                end, options.expiration)
             end)
 
             return ok
         end,
         read_many = function(event_id, group, wanted)
-            return read_many(map(`live:{event_id}:g{group}`), wanted, shard_key)
+            return read_many(group_map(event_id, group), wanted, shard_key, parse.shard)
         end,
     }
 
     local partials: types.PartialStore = {
         write = function(event_id, group, partial)
             local ok = call(function()
-                map(`live:{event_id}:root`):SetAsync(partial_key(group), partial, options.expiration)
+                root_map(event_id):SetAsync(partial_key(group), partial, options.expiration)
             end)
 
             return ok
         end,
         read_many = function(event_id, wanted)
-            return read_many(map(`live:{event_id}:root`), wanted, partial_key)
+            return read_many(root_map(event_id), wanted, partial_key, parse.partial)
         end,
     }
 
     local function read_total(event_id: string, replica: number): (boolean, types.Snapshot?)
-        return call(function()
-            return map(`live:{event_id}:meta`):GetAsync(`total:{replica}`)
+        local ok, value = call(function()
+            return meta_map(event_id):GetAsync(`total:{replica}`)
         end)
+
+        return ok, if ok then parse.snapshot(value) else nil
     end
 
     local function write_total(event_id: string, replica: number, snapshot: types.Snapshot): boolean
         local ok = call(function()
-            map(`live:{event_id}:meta`):UpdateAsync(
-                `total:{replica}`,
-                function(current: types.Snapshot?): types.Snapshot?
-                    if current and current.version > snapshot.version then
-                        return nil
-                    end
+            meta_map(event_id):UpdateAsync(`total:{replica}`, function(current: unknown): types.Snapshot?
+                local stored = parse.snapshot(current)
+                if stored and stored.version > snapshot.version then
+                    return nil
+                end
 
-                    return snapshot
-                end,
-                options.expiration
-            )
+                return snapshot
+            end, options.expiration)
         end)
 
         return ok
@@ -166,7 +181,7 @@ function memory_store.ports(options: Options): types.Ports
     local lease: types.Lease = {
         acquire = function(event_id, role, server_id, ttl)
             local ok, holder = call(function()
-                return map(`live:{event_id}:meta`):UpdateAsync(`lease:{role}`, function(current: string?): string?
+                return meta_map(event_id):UpdateAsync(`lease:{role}`, function(current: string?): string?
                     if current ~= nil and current ~= server_id then
                         return nil
                     end
@@ -201,8 +216,9 @@ end
 function memory_store.subscribe(event_id: string, on_snapshot: (types.Snapshot) -> ()): RBXScriptConnection?
     local ok, connection = pcall(function()
         return messaging_service:SubscribeAsync(memory_store.topic(event_id), function(message)
-            if type(message.Data) == "table" then
-                on_snapshot(message.Data)
+            local snapshot = parse.snapshot(message.Data)
+            if snapshot then
+                on_snapshot(snapshot)
             end
         end)
     end)

@@ -3,9 +3,10 @@
 local players = game:GetService("Players")
 local replicated_storage = game:GetService("ReplicatedStorage")
 
+local every = require(script.Parent.Parent.util.every)
 local net = require(replicated_storage.Shared.net)
 local profiles = require(script.Parent.Parent.data.profiles)
-local tuning = require(replicated_storage.Shared.config.tuning)
+local tuning = require(script.Parent.Parent.config.tuning)
 local types = require(script.Parent.types)
 
 export type Snapshot = {
@@ -52,12 +53,9 @@ function inventory.start()
         sent[player] = nil
     end)
 
-    task.spawn(function()
-        while true do
-            task.wait(tuning.trade.inventory_interval)
-            for _, player in players:GetPlayers() do
-                sync(player)
-            end
+    every("inventory", tuning.trade.inventory_interval, function()
+        for _, player in players:GetPlayers() do
+            sync(player)
         end
     end)
 end

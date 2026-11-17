@@ -64,12 +64,13 @@ function gift.pending(data: Data): { string }
     return ids
 end
 
-function gift.deliver(data: Data, ids: { string }, send: Send, active: () -> boolean): number
+function gift.deliver(data: Data, ids: { string }, send: Send, active: () -> boolean, max_sends: number): number
     local blocked: { [number]: boolean } = {}
     local delivered = 0
     for _, tx_id in ids do
         local outgoing = data.outbox[tx_id]
-        if outgoing == nil or blocked[outgoing.to] then
+        local sends = if outgoing then outgoing.sends or 0 else 0
+        if outgoing == nil or blocked[outgoing.to] or sends >= max_sends then
             continue
         end
 
@@ -77,10 +78,12 @@ function gift.deliver(data: Data, ids: { string }, send: Send, active: () -> boo
             break
         end
 
+        outgoing.sends = sends + 1
         if send(outgoing.to, gift.message(tx_id, outgoing)) then
             data.outbox[tx_id] = nil
             delivered += 1
         else
+            outgoing.sends = sends
             blocked[outgoing.to] = true
         end
     end

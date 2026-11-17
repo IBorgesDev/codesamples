@@ -11,7 +11,7 @@ export type View = {
 }
 
 export type Mine = {
-    votes: { [string]: { option: string, here: boolean } },
+    votes: { [string]: { option: string, changeable: boolean } },
     rewards: { [string]: boolean },
 }
 

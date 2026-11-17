@@ -10,7 +10,7 @@ const DURATION = __ENV.DURATION || "2m";
 const PLAYERS_PER_SERVER = 40;
 const MAX_ATTEMPTS = 5;
 const RETRY_AFTER_CAP_SECONDS = 10;
-const PLACE_ID = 1;
+const PLACE_ID = Number(__ENV.PLACE_ID || 1);
 const RUN = Date.now().toString(36);
 
 const catalog = JSON.parse(open(__ENV.SCHEMA_PATH || "/schema/events.json"));

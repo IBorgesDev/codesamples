@@ -2,32 +2,35 @@ import Fastify from "fastify";
 import { Redis } from "ioredis";
 import { ClickHouse } from "./clickhouse.js";
 import { loadWorkerConfig } from "./config.js";
-import { streamKey } from "./keys.js";
+import { rejectedKey, streamKey } from "./keys.js";
+import { logger } from "./log.js";
 import { createRegistry, createWorkerMetrics } from "./metrics.js";
 import { type RowSink, ShardWorker } from "./pipeline.js";
 import { RedisShardStream } from "./stream.js";
 
 const EVENTS_TABLE = "analytics.events";
-const STALE_AFTER_MS = 60_000;
-const STOP_GRACE_MS = 10_000;
 
+const log = logger("analytics-worker");
 const config = loadWorkerConfig();
 const redis = new Redis(config.redisUrl, { maxRetriesPerRequest: 2 });
+redis.on("error", (error) => log("redis connection", error));
 const clickhouse = new ClickHouse(config.clickhouse);
-const metrics = createWorkerMetrics(createRegistry(true));
+const metrics = createWorkerMetrics(createRegistry());
 const sink: RowSink = { insert: (rows, token) => clickhouse.insert(EVENTS_TABLE, rows, token) };
 const connections = Array.from({ length: config.streamShards }, () => redis.duplicate());
-const workers = connections.map(
-  (connection, shard) =>
-    new ShardWorker(new RedisShardStream(connection, streamKey(shard), config.consumer), sink, metrics, {
-      readCount: config.readCount,
-      blockMs: config.blockMs,
-      claimIdleMs: config.claimIdleMs,
-      reclaimEveryMs: config.reclaimEveryMs,
-      backoffBaseMs: config.backoffBaseMs,
-      backoffMaxMs: config.backoffMaxMs,
-    }),
-);
+const workers = connections.map((connection, shard) => {
+  connection.on("error", (error) => log(`redis connection for shard ${shard}`, error));
+  const stream = new RedisShardStream(connection, streamKey(shard), rejectedKey(shard), config.consumer, config.rejectedKept);
+  return new ShardWorker(stream, sink, metrics, {
+    readCount: config.readCount,
+    blockMs: config.blockMs,
+    claimIdleMs: config.claimIdleMs,
+    reclaimEveryMs: config.reclaimEveryMs,
+    backoffBaseMs: config.backoffBaseMs,
+    backoffMaxMs: config.backoffMaxMs,
+    log,
+  });
+});
 
 const controller = new AbortController();
 const runs = workers.map((worker) => worker.run(controller.signal));
@@ -36,7 +39,7 @@ const app = Fastify({ logger: false });
 
 app.get("/healthz", async (_request, reply) => {
   const pong = await redis.ping().catch(() => null);
-  const alive = workers.every((worker) => Date.now() - worker.lastBeatAt() < STALE_AFTER_MS);
+  const alive = workers.every((worker) => Date.now() - worker.lastBeatAt() < config.staleAfterMs);
   const healthy = pong === "PONG" && alive;
   return reply.code(healthy ? 200 : 503).send({ redis: pong === "PONG", shards: alive });
 });
@@ -48,7 +51,7 @@ app.get("/metrics", async (_request, reply) => {
 async function shutdown(signal: string) {
   console.log(`analytics-worker: ${signal}, finishing the current inserts`);
   controller.abort();
-  await Promise.race([Promise.allSettled(runs), new Promise((resolve) => setTimeout(resolve, STOP_GRACE_MS))]);
+  await Promise.race([Promise.allSettled(runs), new Promise((resolve) => setTimeout(resolve, config.stopGraceMs))]);
   await app.close();
   for (const connection of connections) {
     connection.disconnect();

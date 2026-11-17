@@ -1,7 +1,6 @@
 --!strict
 
 local http_service = game:GetService("HttpService")
-local replicated_storage = game:GetService("ReplicatedStorage")
 local run_service = game:GetService("RunService")
 local server_script_service = game:GetService("ServerScriptService")
 
@@ -11,9 +10,9 @@ local gift_service = require(script.Parent.Parent.trade.gift_service)
 local profiles = require(script.Parent.Parent.data.profiles)
 local protocol = require(script.Parent.Parent.trade.protocol)
 local records = require(script.Parent.Parent.trade.records)
-local trace = require(replicated_storage.Shared.util.trace)
+local trace = require(script.Parent.Parent.util.trace)
 local trade = require(script.Parent.Parent.trade.service)
-local tuning = require(replicated_storage.Shared.config.tuning)
+local tuning = require(script.Parent.Parent.config.tuning)
 local types = require(script.Parent.Parent.trade.types)
 local workbench = require(script.Parent.bench)
 
@@ -57,16 +56,8 @@ local function trade_once(giver: Loaded, taker: Loaded, offer: types.Items, tall
     local ports = trade.ports()
     local tx_id = http_service:GenerateGUID(false)
     local started = os.clock()
-    local opened, why = protocol.open(ports, giver.account, tx_id, side(giver, 1, offer), side(taker, 0, {}), 1)
-    local outcome: string = opened
-    if opened == "open" then
-        local prepared, prepared_why = protocol.prepare(ports, taker.account, tx_id)
-        outcome = prepared
-        why = prepared_why
-        if prepared == "committed" then
-            protocol.finalize(ports, giver.account, tx_id)
-        end
-    end
+    local outcome: string, why =
+        protocol.run(ports, giver.account, taker.account, tx_id, side(giver, 1, offer), side(taker, 0, {}), 1)
 
     table.insert(latencies, os.clock() - started)
     local key = if outcome ~= "committed" and why then `{outcome} ({why})` else outcome

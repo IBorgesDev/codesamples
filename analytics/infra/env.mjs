@@ -1,7 +1,9 @@
 import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+
+const OWNER_ONLY = 0o600;
 
 const infra = dirname(fileURLToPath(import.meta.url));
 const target = join(infra, ".env");
@@ -44,5 +46,6 @@ for (const [name, value] of known) {
   }
 }
 
-writeFileSync(target, `${lines.join("\n")}\n`);
+writeFileSync(target, `${lines.join("\n")}\n`, { mode: OWNER_ONLY });
+chmodSync(target, OWNER_ONLY);
 console.log(added > 0 ? `infra/.env: generated ${added} value(s)` : "infra/.env: up to date");

@@ -9,7 +9,7 @@ local items = require(replicated_storage.Shared.config.items)
 local profiles = require(script.Parent.Parent.data.profiles)
 local protocol = require(script.Parent.Parent.trade.protocol)
 local trade = require(script.Parent.Parent.trade.service)
-local tuning = require(replicated_storage.Shared.config.tuning)
+local tuning = require(script.Parent.Parent.config.tuning)
 local types = require(script.Parent.Parent.trade.types)
 
 const MILLISECONDS = 1000
@@ -216,15 +216,7 @@ function bench.all(tasks: { () -> () })
 end
 
 function bench.coordinator(): (coordinator.Coordinator, () -> number)
-    local coord = coordinator.memory_store({
-        map_name = tuning.trade.coordinator_map .. tuning.profiles.studio_suffix,
-        maps = tuning.trade.coordinator_maps,
-        presence_ttl = tuning.trade.presence_ttl,
-        session_ttl = tuning.trade.session_ttl,
-        closed_ttl = tuning.trade.closed_ttl,
-        backoff_base = tuning.trade.backoff_base,
-        backoff_cap = tuning.trade.backoff_cap,
-    })
+    local coord = coordinator.memory_store()
     local calls = 0
     local wrapped = {}
     for name, fn in coord :: any do

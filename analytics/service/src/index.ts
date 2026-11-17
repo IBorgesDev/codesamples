@@ -3,22 +3,25 @@ import { buildApp } from "./app.js";
 import { loadCatalog } from "./catalog.js";
 import { ClickHouse } from "./clickhouse.js";
 import { loadIngestConfig } from "./config.js";
+import { logger } from "./log.js";
 import { createIngestMetrics, createRegistry } from "./metrics.js";
 import { ClickHouseStats } from "./stats.js";
 import { RedisBatchStore } from "./store.js";
 
+const log = logger("analytics");
 const config = loadIngestConfig();
 const catalog = loadCatalog(config.schemaPath);
 const redis = new Redis(config.redisUrl, { enableAutoPipelining: true, maxRetriesPerRequest: 2 });
+redis.on("error", (error) => log("redis connection", error));
 const store = new RedisBatchStore(redis, {
   shards: config.streamShards,
   dedupeTtlSeconds: config.dedupeTtlSeconds,
 });
 const stats = new ClickHouseStats(new ClickHouse(config.clickhouse));
-const metrics = createIngestMetrics(createRegistry(true));
-const app = buildApp({ config, catalog, store, stats, metrics });
+const metrics = createIngestMetrics(createRegistry());
+const app = buildApp({ config, catalog, store, stats, metrics, log });
 
-store.ensureGroups().catch((error) => console.error("analytics: could not create consumer groups yet", error));
+store.ensureGroups().catch((error: unknown) => log("could not create consumer groups yet", error));
 
 async function shutdown(signal: string) {
   console.log(`analytics: ${signal}, closing`);

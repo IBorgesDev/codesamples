@@ -1,9 +1,7 @@
 --!strict
 
-local replicated_storage = game:GetService("ReplicatedStorage")
-
 local counter = require(script.Parent.counter)
-local hash = require(replicated_storage.Shared.util.hash)
+local hash = require(script.Parent.Parent.util.hash)
 local planner = require(script.Parent.planner)
 local types = require(script.Parent.types)
 

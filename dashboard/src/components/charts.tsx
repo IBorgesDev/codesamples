@@ -11,38 +11,15 @@ import {
 } from "recharts";
 import { formatCompact, formatFull, formatMinute } from "@/lib/format";
 
-export type Series = { key: string; label: string; color: string };
-
-type TooltipRow = { dataKey?: unknown; value?: unknown };
-
-function Readout({
-  active,
-  label,
-  payload,
-  series,
-}: {
-  active?: boolean;
-  label?: unknown;
-  payload?: readonly TooltipRow[];
-  series: Series[];
-}) {
-  if (!active || !payload || payload.length === 0) {
-    return null;
-  }
-
+function Readout({ minute, value, label, color }: { minute: number; value: number; label: string; color: string }) {
   return (
     <div className="rounded-lg bg-surface px-3 py-2 text-sm shadow-lg ring-1 ring-ring">
-      <div className="mb-1 text-xs text-muted">{formatMinute(Number(label))}</div>
-      {series.map((entry) => {
-        const row = payload.find((item) => item.dataKey === entry.key);
-        return (
-          <div key={entry.key} className="flex items-center gap-2">
-            <span className="inline-block h-0.5 w-3 rounded" style={{ background: entry.color }} />
-            <span className="tabular font-semibold text-ink">{formatFull(Number(row?.value ?? 0))}</span>
-            <span className="text-ink-2">{entry.label}</span>
-          </div>
-        );
-      })}
+      <div className="mb-1 text-xs text-muted">{formatMinute(minute)}</div>
+      <div className="flex items-center gap-2">
+        <span className="inline-block h-0.5 w-3 rounded" style={{ background: color }} />
+        <span className="tabular font-semibold text-ink">{formatFull(value)}</span>
+        <span className="text-ink-2">{label}</span>
+      </div>
     </div>
   );
 }
@@ -62,8 +39,6 @@ export function AreaTrend({
   color: string;
   height?: number;
 }) {
-  const series = [{ key: dataKey, label, color }];
-
   return (
     <div style={{ height }}>
       <ResponsiveContainer width="100%" height="100%">
@@ -74,14 +49,14 @@ export function AreaTrend({
             type="number"
             scale="time"
             domain={["dataMin", "dataMax"]}
-            tickFormatter={(value: number) => formatMinute(value)}
+            tickFormatter={formatMinute}
             tick={AXIS_TICK}
             tickLine={false}
             axisLine={{ stroke: "var(--axis)" }}
             minTickGap={48}
           />
           <YAxis
-            tickFormatter={(value: number) => formatCompact(value)}
+            tickFormatter={formatCompact}
             tick={AXIS_TICK}
             tickLine={false}
             axisLine={false}
@@ -89,14 +64,11 @@ export function AreaTrend({
           />
           <Tooltip
             cursor={{ stroke: "var(--axis)", strokeWidth: 1 }}
-            content={(props) => (
-              <Readout
-                active={props.active}
-                label={props.label}
-                payload={props.payload as readonly TooltipRow[] | undefined}
-                series={series}
-              />
-            )}
+            content={({ active, label: minute, payload }) =>
+              active && payload.length > 0 ? (
+                <Readout minute={Number(minute)} value={Number(payload[0]?.value ?? 0)} label={label} color={color} />
+              ) : null
+            }
           />
           <Area
             type="monotone"

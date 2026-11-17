@@ -1,13 +1,12 @@
 --!strict
 
 local players = game:GetService("Players")
-local replicated_storage = game:GetService("ReplicatedStorage")
-local run_service = game:GetService("RunService")
 local server_script_service = game:GetService("ServerScriptService")
 
 local profile_store = require(server_script_service.ServerPackages.ProfileStore)
-local trace = require(replicated_storage.Shared.util.trace)
-local tuning = require(replicated_storage.Shared.config.tuning)
+local store_name = require(script.Parent.store_name)
+local trace = require(script.Parent.Parent.util.trace)
+local tuning = require(script.Parent.Parent.config.tuning)
 local types = require(script.Parent.Parent.live_event.types)
 
 const CONFIG = tuning.profiles
@@ -25,8 +24,7 @@ local template: types.PlayerData = {
     live_votes = {},
     live_rewards = {},
 }
-local store_name = if run_service:IsStudio() then CONFIG.store_name .. CONFIG.studio_suffix else CONFIG.store_name
-local store = profile_store.New(store_name, template)
+local store = profile_store.New(store_name(CONFIG.store_name), template)
 local loaded: { [Player]: Loaded } = {}
 local listeners: { (Player, Loaded) -> () } = {}
 

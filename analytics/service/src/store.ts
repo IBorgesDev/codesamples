@@ -1,6 +1,6 @@
 import type { Redis } from "ioredis";
 import { CONSUMER_GROUP, seenKey, shardOf, streamKey } from "./keys.js";
-import { flatRecord, isBusyGroup, isMissingKey, type Runner, script } from "./redis.js";
+import { ensureGroup, flatRecord, isMissingKey, type Runner, script } from "./redis.js";
 import { APPEND_BATCH } from "./scripts.js";
 
 export type AppendResult = "appended" | "duplicate";
@@ -28,13 +28,7 @@ export class RedisBatchStore implements BatchStore {
 
   async ensureGroups(): Promise<void> {
     for (let shard = 0; shard < this.options.shards; shard++) {
-      try {
-        await this.redis.call("XGROUP", "CREATE", streamKey(shard), CONSUMER_GROUP, "0", "MKSTREAM");
-      } catch (error) {
-        if (!isBusyGroup(error)) {
-          throw error;
-        }
-      }
+      await ensureGroup(this.redis, streamKey(shard));
     }
   }
 
