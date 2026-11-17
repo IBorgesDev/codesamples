@@ -5,14 +5,24 @@ local tuning = {}
 tuning.net = table.freeze({
     request_timeout = 10,
     sync_cooldown = 1,
-    default_rate = 10,
-    default_burst = 20,
+    default_pace = table.freeze({ rate = 10, burst = 20 }),
+    global_pace = table.freeze({ rate = 20, burst = 40 }),
+    strike_limit = 5,
+    strike_window = 60,
+    flood_limit = 300,
 })
 
 tuning.trade = table.freeze({
     max_items_per_side = 12,
     max_coins_per_side = 1_000_000_000,
     countdown = 3,
+    accept_delay = 3,
+    max_invites = 5,
+    closed_ttl = 60,
+    cross_pace = table.freeze({ rate = 1 / 3, burst = 6 }),
+    cross_answer_cooldown = 10,
+    gift_pace = table.freeze({ rate = 1 / 15, burst = 3 }),
+    gift_min_budget = 12,
     persist_timeout = 15,
     record_timeout = 120,
     missing_record_grace = 60,

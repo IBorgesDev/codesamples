@@ -35,7 +35,7 @@ export type Coordinator = {
     presence_clear: (user_id: number, server_id: string) -> boolean,
     presence_get: (user_id: number) -> (boolean, string?),
     create: (shared: Shared) -> boolean,
-    change: (session_id: string, change: Change) -> (boolean, Shared?, string?),
+    change: (session_id: string, change: Change, closing: boolean?) -> (boolean, Shared?, string?),
     get: (session_id: string) -> (boolean, Shared?),
     send: (server_id: string, message: Message) -> boolean,
 }
@@ -45,6 +45,7 @@ export type Options = {
     maps: number,
     presence_ttl: number,
     session_ttl: number,
+    closed_ttl: number,
     backoff_base: number,
     backoff_cap: number,
 }
@@ -143,15 +144,12 @@ function coordinator.memory_store(options: Options): Coordinator
 
             return ok
         end,
-        change = function(session_id, change)
+        change = function(session_id, change, closing)
             local result: { why: string? } = { why = nil }
+            local ttl = if closing then options.closed_ttl else options.session_ttl
             local ok, stored = call(function()
                 local key = `s:{session_id}`
-                return map(key):UpdateAsync(
-                    key,
-                    coordinator.change_transform(change, result) :: any,
-                    options.session_ttl
-                )
+                return map(key):UpdateAsync(key, coordinator.change_transform(change, result) :: any, ttl)
             end)
 
             if not ok then

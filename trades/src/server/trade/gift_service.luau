@@ -9,6 +9,7 @@ local guard = require(script.Parent.Parent.net.guard)
 local inbox = require(script.Parent.inbox)
 local net = require(replicated_storage.Shared.net)
 local profiles = require(script.Parent.Parent.data.profiles)
+local records = require(script.Parent.records)
 local trace = require(replicated_storage.Shared.util.trace)
 local tuning = require(replicated_storage.Shared.config.tuning)
 local types = require(script.Parent.types)
@@ -43,7 +44,7 @@ end
 
 local function deliver(account: types.Account, send: gift.Send): number
     local ids = gift.pending(account.data)
-    if #ids == 0 or not account.persist(durable(ids)) then
+    if #ids == 0 or records.budget() < CONFIG.gift_min_budget or not account.persist(durable(ids)) then
         return 0
     end
 
@@ -74,8 +75,18 @@ function gift_service.deliver(account: types.Account, send: gift.Send?): number
 end
 
 function gift_service.send(player: Player, to: number, coins: number, item_ids: { string }): boolean
+    if
+        to == player.UserId
+        or (coins == 0 and #item_ids == 0)
+        or profiles.get(player) == nil
+        or records.budget() < CONFIG.gift_min_budget
+        or profiles.exists(to) ~= true
+    then
+        return false
+    end
+
     local loaded = profiles.get(player)
-    if loaded == nil or to == player.UserId or (coins == 0 and #item_ids == 0) then
+    if loaded == nil then
         return false
     end
 
@@ -158,7 +169,7 @@ end
 
 function gift_service.start()
     local t = guard.t
-    net.trade.gift:on(guard.handler("trade.gift", guard.limiter(), {
+    net.trade.gift:on(guard.handler("trade.gift", guard.limiter(CONFIG.gift_pace), {
         t.integer(1, MAX_USER_ID),
         t.integer(0, CONFIG.max_coins_per_side),
         t.array(t.id, CONFIG.max_items_per_side),

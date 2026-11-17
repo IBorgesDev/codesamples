@@ -14,6 +14,10 @@ world fishing goal, a vote for the next boss. No contribution is lost or counted
 - One vote per player, counted exactly once even through crashes (the vote is the player's own
   entry, saved in the profile and republished until it lands), goal rewards granted once, and totals
   archived on DataStore so a MemoryStore reset never shows a lower number.
+- The vote is the only remote a client can use. The server checks every argument and the event
+  before anything changes, rate-limits it, and kicks a client that sends malformed payloads or
+  floods; the honest client paces itself with the same limits
+  ([docs/0004-remote-security.md](docs/0004-remote-security.md)).
 
 The capacity model in `tests/live_capacity.spec.luau` fits 76M CCU with every player voting, in 6–12% of
 the MemoryStore quota.

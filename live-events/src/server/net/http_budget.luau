@@ -2,7 +2,7 @@
 
 local replicated_storage = game:GetService("ReplicatedStorage")
 
-local token_bucket = require(script.Parent.token_bucket)
+local token_bucket = require(replicated_storage.Shared.net.token_bucket)
 local tuning = require(replicated_storage.Shared.config.tuning)
 
 const SECONDS_PER_MINUTE = 60

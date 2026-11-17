@@ -1,6 +1,6 @@
 return function()
-    local server_script_service = game:GetService("ServerScriptService")
-    local token_bucket = require(server_script_service.Server.net.token_bucket)
+    local replicated_storage = game:GetService("ReplicatedStorage")
+    local token_bucket = require(replicated_storage.Shared.net.token_bucket)
 
     local function fake_clock()
         local now = 0

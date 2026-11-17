@@ -26,6 +26,7 @@ function view.of(
     local me = if session.a.user_id == user_id then session.a else session.b
     local them = if session.a.user_id == user_id then session.b else session.a
     local lock_at = session.lock_at
+    local accept_in = negotiation.accept_in(session, user_id, now)
 
     return {
         id = id,
@@ -33,6 +34,7 @@ function view.of(
         reason = reason,
         version = session.version,
         lock_in = if lock_at then math.max(0, lock_at - now) else nil,
+        accept_in = if accept_in > 0 then accept_in else nil,
         me = { coins = me.coins, items = kinds(me), accepted = me.accepted },
         them = { user_id = them.user_id, coins = them.coins, items = kinds(them), accepted = them.accepted },
     }

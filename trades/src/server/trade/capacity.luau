@@ -25,12 +25,14 @@ export type Load = {
     trade_minutes: number,
     changes_per_trade: number,
     hints_per_trade: number,
+    spammer_share: number?,
 }
 
 export type Plan = {
     trades_per_minute: number,
     ru_presence: number,
     ru_trades: number,
+    ru_spam: number,
     ru_quota: number,
     ru_share: number,
     hottest_session_read: number,
@@ -63,18 +65,31 @@ function capacity.plan(scenario: Scenario, load: Load): Plan
         + polls_per_minute * load.trade_minutes * GET_RU
     local ru_trades = trades * ru_per_trade
     local quota = store.ru_base + store.ru_per_ccu * scenario.ccu
+    local session_minutes = load.trade_minutes + config.closed_ttl / SECONDS_PER_MINUTE
+
+    local spammers = scenario.ccu * (load.spammer_share or 0)
+    local spam_changes = config.cross_pace.rate * SECONDS_PER_MINUTE
+    local spam_sessions = per_minute(config.cross_answer_cooldown)
+    local spam_alive = math.ceil(config.closed_ttl / config.cross_answer_cooldown) + 1
+    local ru_spam = spammers
+        * (spam_sessions * SET_RU + spam_changes * (UPDATE_RU + GET_RU) + polls_per_minute * GET_RU)
+    local ru_total = ru_presence + ru_trades + ru_spam
 
     return {
         trades_per_minute = trades,
         ru_presence = ru_presence,
         ru_trades = ru_trades,
+        ru_spam = ru_spam,
         ru_quota = quota,
-        ru_share = (ru_presence + ru_trades) / quota,
-        hottest_session_read = polls_per_minute * GET_RU + load.changes_per_trade / load.trade_minutes * UPDATE_RU,
-        busiest_map_ru = (ru_presence + ru_trades) / config.coordinator_maps,
-        memory_bytes = scenario.ccu * PRESENCE_BYTES + trades * load.trade_minutes * SESSION_BYTES,
+        ru_share = ru_total / quota,
+        hottest_session_read = polls_per_minute * GET_RU
+            + math.max(load.changes_per_trade / load.trade_minutes, spam_changes) * UPDATE_RU,
+        busiest_map_ru = ru_total / config.coordinator_maps,
+        memory_bytes = scenario.ccu * PRESENCE_BYTES
+            + trades * session_minutes * SESSION_BYTES
+            + spammers * spam_alive * SESSION_BYTES,
         memory_quota = store.memory_base + store.memory_per_ccu * scenario.ccu,
-        deliveries_per_game = trades * load.hints_per_trade,
+        deliveries_per_game = trades * load.hints_per_trade + spammers * (spam_changes + 2 * spam_sessions),
         delivery_limit_game = messaging.per_game_base + messaging.per_game_per_server * servers,
     }
 end

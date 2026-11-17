@@ -3,12 +3,16 @@
 local players = game:GetService("Players")
 local replicated_storage = game:GetService("ReplicatedStorage")
 
+local token_bucket = require(script.Parent.token_bucket)
 local tuning = require(replicated_storage.Shared.config.tuning)
 
 export type Kind = "reliable" | "unreliable"
 
+export type Pace = { rate: number, burst: number }
+
 export type ToServer<T...> = {
-    fire: (self: ToServer<T...>, T...) -> (),
+    pace: Pace,
+    fire: (self: ToServer<T...>, T...) -> boolean,
     on: (self: ToServer<T...>, handler: (player: Player, ...unknown) -> ()) -> RBXScriptConnection,
 }
 
@@ -35,6 +39,36 @@ local remote = {}
 
 remote.REJECTED = table.freeze({ rejected = true })
 
+const SELF = "self"
+
+local function discard() end
+
+function remote.pacer(clock: (() -> number)?): (Pace) -> boolean
+    local buckets: { [Pace]: token_bucket.Limiter } = {}
+
+    return function(pace)
+        local bucket = buckets[pace]
+        if bucket == nil then
+            bucket = token_bucket.new(pace.rate, pace.burst, clock)
+            buckets[pace] = bucket
+        end
+
+        return bucket:take(SELF)
+    end
+end
+
+local paced = remote.pacer()
+
+local function allowed(pace: Pace): boolean
+    return paced(pace) and paced(tuning.net.global_pace)
+end
+
+local function one_way(event: RemoteEvent, create: boolean)
+    if create then
+        event.OnServerEvent:Connect(discard)
+    end
+end
+
 local function instance(folder: Instance, name: string, kind: Kind, create: boolean): RemoteEvent
     local class = if kind == "unreliable" then "UnreliableRemoteEvent" else "RemoteEvent"
     local existing = folder:FindFirstChild(name)
@@ -55,15 +89,22 @@ local function instance(folder: Instance, name: string, kind: Kind, create: bool
     return event :: any
 end
 
-function remote.to_server<T...>(kind: Kind?): ToServer<T...>
+function remote.to_server<T...>(pace: Pace?, kind: Kind?): ToServer<T...>
     local event: RemoteEvent = nil :: any
     local def = {}
+    def.pace = pace or tuning.net.default_pace
     function def._bind(folder: Instance, path: string, create: boolean)
         event = instance(folder, path, kind or "reliable", create)
     end
 
     function def.fire(_, ...)
+        if not allowed(def.pace) then
+            return false
+        end
+
         event:FireServer(...)
+
+        return true
     end
 
     function def.on(_, handler)
@@ -78,6 +119,7 @@ function remote.to_client<T...>(kind: Kind?): ToClient<T...>
     local def = {}
     function def._bind(folder: Instance, path: string, create: boolean)
         event = instance(folder, path, kind or "reliable", create)
+        one_way(event, create)
     end
 
     function def.fire(_, player: Player, ...)
@@ -139,6 +181,7 @@ function remote.request<R, A...>(timeout: number?): Request<R, A...>
     function def._bind(folder: Instance, path: string, create: boolean)
         req = instance(folder, `{path}.req`, "reliable", create)
         res = instance(folder, `{path}.res`, "reliable", create)
+        one_way(res, create)
         if not create then
             res.OnClientEvent:Connect(function(id: number, ok: boolean, value: any)
                 local thread = pending[id]
@@ -201,6 +244,7 @@ function remote.state<T>(): State<T>
     function def._bind(folder: Instance, path: string, create: boolean)
         push = instance(folder, `{path}.push`, "reliable", create)
         sync = instance(folder, `{path}.sync`, "reliable", create)
+        one_way(push, create)
         if create then
             sync.OnServerEvent:Connect(function(player: Player)
                 local now = os.clock()

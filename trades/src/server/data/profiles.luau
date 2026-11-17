@@ -1,5 +1,6 @@
 --!strict
 
+local data_store_service = game:GetService("DataStoreService")
 local players = game:GetService("Players")
 local replicated_storage = game:GetService("ReplicatedStorage")
 local run_service = game:GetService("RunService")
@@ -32,7 +33,9 @@ local template: types.Data = {
 }
 local store_name = if run_service:IsStudio() then CONFIG.store_name .. CONFIG.studio_suffix else CONFIG.store_name
 local store = profile_store.New(store_name, template)
+local raw_store = data_store_service:GetDataStore(store_name)
 local loaded: { [Player]: Loaded } = {}
+local known: { [number]: boolean } = {}
 local listeners: { (Player, Loaded) -> () } = {}
 
 function profiles.account(user_id: number, profile: any): types.Account
@@ -94,6 +97,26 @@ end
 
 function profiles.message(user_id: number, message: any): boolean
     return profiles.message_key(`player_{user_id}`, message)
+end
+
+function profiles.exists(user_id: number): boolean?
+    if known[user_id] or players:GetPlayerByUserId(user_id) then
+        return true
+    end
+
+    local ok, value = pcall(function()
+        return raw_store:GetAsync(`player_{user_id}`)
+    end)
+
+    if not ok then
+        return nil
+    end
+
+    if value ~= nil then
+        known[user_id] = true
+    end
+
+    return value ~= nil
 end
 
 function profiles.get(player: Player): Loaded?

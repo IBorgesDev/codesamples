@@ -57,11 +57,46 @@ return function()
             expect(session.lock_at).to.equal(lock_at)
         end)
 
-        it("a no-op change keeps the version", function()
+        it("refuses a change that changes nothing, so nothing is written or pushed", function()
             local session = negotiation.new("s", A, B)
-            negotiation.apply(session, A, { kind = "remove", item_id = "nothing" }, 0)
-            negotiation.apply(session, A, { kind = "coins", amount = 0 }, 0)
-            expect(session.version).to.equal(1)
+            for _, op in
+                {
+                    { kind = "remove", item_id = "nothing" },
+                    { kind = "coins", amount = 0 },
+                } :: { negotiation.Op }
+            do
+                local ok, why = negotiation.apply(session, A, op, 0)
+                expect(ok).to.equal(false)
+                expect(why).to.equal("unchanged")
+            end
+
+            negotiation.apply(session, A, { kind = "add", item_id = "j1", item = EGG }, 0)
+            local ok, why = negotiation.apply(session, A, { kind = "add", item_id = "j1", item = EGG }, 0)
+            expect(ok).to.equal(false)
+            expect(why).to.equal("unchanged")
+            expect(session.version).to.equal(2)
+            negotiation.apply(session, A, { kind = "accept", version = 2 }, 0)
+            ok, why = negotiation.apply(session, A, { kind = "accept", version = 2 }, 1)
+            expect(ok).to.equal(false)
+            expect(why).to.equal("unchanged")
+        end)
+
+        it("refuses an accept right after the other side changed its offer (last-moment swap)", function()
+            local session = negotiation.new("s", A, B)
+            negotiation.apply(session, B, { kind = "add", item_id = "j1", item = EGG }, 10)
+            negotiation.apply(session, B, { kind = "remove", item_id = "j1" }, 20)
+            local delay = tuning.trade.accept_delay
+            local ok, why =
+                negotiation.apply(session, A, { kind = "accept", version = session.version }, 20 + delay / 2)
+            expect(ok).to.equal(false)
+            expect(why).to.equal("too_soon")
+            expect(negotiation.accept_in(session, A, 20 + delay / 2)).to.equal(delay / 2)
+            expect(negotiation.accept_in(session, B, 20)).to.equal(0)
+            expect((negotiation.apply(session, B, { kind = "accept", version = session.version }, 20))).to.equal(true)
+            expect((negotiation.apply(session, A, { kind = "accept", version = session.version }, 20 + delay))).to.equal(
+                true
+            )
+            expect(session.lock_at).to.equal(20 + delay + tuning.trade.countdown)
         end)
 
         it("validates coins and the item limit", function()

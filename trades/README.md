@@ -15,6 +15,10 @@ and whenever. Works on one server, across servers, and for gifts to players who 
   outbox in the sender's profile and are delivered with ProfileStore messages, numbered so a resend
   is never credited twice, after taking a slot in the receiver's inbox so its message queue never
   overflows.
+- **Remotes** only carry intents for the caller's own trade. The server checks every argument,
+  ownership and balance, rate-limits each remote, bounds the DataStore and MemoryStore cost of
+  every call, and kicks a client that sends malformed payloads or floods; the honest client paces
+  itself with the same limits ([docs/0004-remote-security.md](docs/0004-remote-security.md)).
 
 More in [docs/protocol.md](docs/protocol.md), [docs/invariants.md](docs/invariants.md) and
 [docs/0003-cross-server-trades-and-gifts.md](docs/0003-cross-server-trades-and-gifts.md).

@@ -14,6 +14,7 @@ export type Party = {
     items: Items,
     count: number,
     accepted: boolean,
+    changed_at: number?,
 }
 
 export type State = "negotiating" | "locked" | "cancelled"
@@ -58,7 +59,18 @@ function negotiation.party(session: Session, user_id: number): Party?
     return nil
 end
 
-local function changed(session: Session)
+function negotiation.accept_in(session: Session, user_id: number, now: number): number
+    local them = if session.a.user_id == user_id then session.b else session.a
+    local changed_at = them.changed_at
+    if changed_at == nil then
+        return 0
+    end
+
+    return math.max(0, changed_at + tuning.trade.accept_delay - now)
+end
+
+local function changed(session: Session, me: Party, now: number)
+    me.changed_at = now
     session.version += 1
     session.a.accepted = false
     session.b.accepted = false
@@ -84,14 +96,14 @@ function negotiation.apply(session: Session, user_id: number, op: Op, now: numbe
         end
 
         if amount == me.coins then
-            return true, nil
+            return false, "unchanged"
         end
 
         me.coins = amount
-        changed(session)
+        changed(session, me, now)
     elseif op.kind == "add" then
         if me.items[op.item_id] then
-            return true, nil
+            return false, "unchanged"
         end
 
         if me.count >= tuning.trade.max_items_per_side then
@@ -100,18 +112,26 @@ function negotiation.apply(session: Session, user_id: number, op: Op, now: numbe
 
         me.items[op.item_id] = table.clone(op.item)
         me.count += 1
-        changed(session)
+        changed(session, me, now)
     elseif op.kind == "remove" then
         if not me.items[op.item_id] then
-            return true, nil
+            return false, "unchanged"
         end
 
         me.items[op.item_id] = nil
         me.count -= 1
-        changed(session)
+        changed(session, me, now)
     elseif op.kind == "accept" then
         if op.version ~= session.version then
             return false, "stale"
+        end
+
+        if me.accepted then
+            return false, "unchanged"
+        end
+
+        if negotiation.accept_in(session, user_id, now) > 0 then
+            return false, "too_soon"
         end
 
         me.accepted = true

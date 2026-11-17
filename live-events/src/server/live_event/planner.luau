@@ -21,6 +21,7 @@ export type Scenario = {
     events: number,
     options: number,
     voter_share: number?,
+    flipper_share: number?,
 }
 
 export type Plan = {
@@ -160,8 +161,10 @@ function planner.plan(scenario: Scenario, overrides: { shards: number? }?): Plan
     local servers = math.ceil(scenario.ccu / scenario.players_per_server)
     local lifetime = math.ceil(servers * scenario.churn)
     local voters = scenario.ccu * (scenario.voter_share or 0)
-    local votes_per_minute = voters / config.vote_minutes
     local flushes = per_minute(config.flush_interval + config.flush_jitter / 2)
+    local flips_per_minute = math.min(config.vote_pace.rate * SECONDS_PER_MINUTE, flushes)
+    local votes_per_minute = voters / config.vote_minutes
+        + scenario.ccu * (scenario.flipper_share or 0) * flips_per_minute
     local passes = per_minute(config.aggregate_interval)
 
     local shards = chosen.shards or planner.shards(servers, lifetime, voters, scenario.options)

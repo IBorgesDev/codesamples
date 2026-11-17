@@ -221,6 +221,7 @@ function bench.coordinator(): (coordinator.Coordinator, () -> number)
         maps = tuning.trade.coordinator_maps,
         presence_ttl = tuning.trade.presence_ttl,
         session_ttl = tuning.trade.session_ttl,
+        closed_ttl = tuning.trade.closed_ttl,
         backoff_base = tuning.trade.backoff_base,
         backoff_cap = tuning.trade.backoff_cap,
     })
@@ -258,7 +259,8 @@ function bench.negotiate(
 
     local version = offered.session.version
     cross.apply(coord, session_id, a, { kind = "accept", version = version }, now)
-    local _, accepted = cross.apply(coord, session_id, b, { kind = "accept", version = version }, now)
+    local _, accepted =
+        cross.apply(coord, session_id, b, { kind = "accept", version = version }, now + tuning.trade.accept_delay)
 
     return if accepted then accepted.session.lock_at else nil
 end

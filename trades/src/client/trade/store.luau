@@ -18,6 +18,7 @@ export type View = {
     reason: string?,
     version: number,
     lock_in: number?,
+    accept_in: number?,
     me: Side,
     them: Side,
 }
@@ -91,13 +92,38 @@ function store.active(): View?
     return view
 end
 
-function store.invite(user_id: number)
-    net.trade.invite:fire(user_id)
+local function valid_user(user_id: number): boolean
+    return user_id % 1 == 0 and user_id >= 1
+end
+
+local function coins_to_offer(amount: number): number
+    local floored = math.floor(amount)
+    if floored ~= floored then
+        return 0
+    end
+
+    return math.clamp(floored, 0, math.min(state.inventory.coins, tuning.trade.max_coins_per_side))
+end
+
+function store.accept_in(): number
+    local view = state.view
+    if view == nil or view.accept_in == nil then
+        return 0
+    end
+
+    return math.max(0, view.accept_in - (os.clock() - state.view_at))
+end
+
+function store.invite(user_id: number): boolean
+    return valid_user(user_id) and net.trade.invite:fire(user_id)
 end
 
 function store.answer(from: number, accept: boolean)
     drop_invite(from)
-    net.trade.answer:fire(from, accept)
+    if valid_user(from) then
+        net.trade.answer:fire(from, accept)
+    end
+
     changed()
 end
 
@@ -106,12 +132,12 @@ function store.offer_item(item_id: string, add: boolean)
 end
 
 function store.offer_coins(amount: number)
-    net.trade.offer_coins:fire(math.clamp(math.floor(amount), 0, state.inventory.coins))
+    net.trade.offer_coins:fire(coins_to_offer(amount))
 end
 
 function store.accept()
     local view = state.view
-    if view then
+    if view and store.accept_in() <= 0 then
         net.trade.accept:fire(view.version)
     end
 end
@@ -128,8 +154,12 @@ function store.dismiss()
     end
 end
 
-function store.gift(to: number, coins: number, item_ids: { string })
-    net.trade.gift:fire(to, math.clamp(math.floor(coins), 0, state.inventory.coins), item_ids)
+function store.gift(to: number, coins: number, item_ids: { string }): boolean
+    if not valid_user(to) or #item_ids > tuning.trade.max_items_per_side then
+        return false
+    end
+
+    return net.trade.gift:fire(to, coins_to_offer(coins), item_ids)
 end
 
 function store.start()

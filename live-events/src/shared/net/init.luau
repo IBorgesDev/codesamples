@@ -4,12 +4,13 @@ local replicated_storage = game:GetService("ReplicatedStorage")
 local run_service = game:GetService("RunService")
 
 local remote = require(script.remote)
+local tuning = require(replicated_storage.Shared.config.tuning)
 
 local tree = {
     live = {
         progress = remote.to_client("unreliable"),
         sync = remote.to_client(),
-        vote = remote.to_server(),
+        vote = remote.to_server(tuning.live_event.vote_pace),
         mine = remote.state(),
     },
 }

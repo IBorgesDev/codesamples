@@ -1,16 +1,20 @@
 return function()
+    local replicated_storage = game:GetService("ReplicatedStorage")
     local server_script_service = game:GetService("ServerScriptService")
     local coordinator = require(server_script_service.Server.trade.coordinator)
     local cross = require(server_script_service.Server.trade.cross)
     local deep = require(script.Parent.support.deep)
     local protocol = require(server_script_service.Server.trade.protocol)
+    local tuning = require(replicated_storage.Shared.config.tuning)
     local world = require(script.Parent.support.world)
 
     const START = 1_000
 
     local function fake_coordinator()
         local data = {}
+        local writes = {}
         local coord = {
+            writes = writes,
             presence_set = function()
                 return true
             end,
@@ -24,13 +28,14 @@ return function()
                 data[shared.session.id] = deep.copy(shared)
                 return true
             end,
-            change = function(session_id, change)
+            change = function(session_id, change, closing)
                 local result: { why: string? } = { why = nil }
                 local stored = coordinator.change_transform(change, result)(deep.copy(data[session_id]))
                 if stored == nil then
                     return false, nil, result.why
                 end
 
+                table.insert(writes, closing == true)
                 data[session_id] = deep.copy(stored)
                 return true, deep.copy(stored), nil
             end,
@@ -72,8 +77,9 @@ return function()
         )
         cross.apply(coord, "trade", 1, { kind = "coins", amount = 20 }, START)
         local _, shared = coord.get("trade")
-        cross.apply(coord, "trade", 1, { kind = "accept", version = shared.session.version }, START)
-        cross.apply(coord, "trade", 2, { kind = "accept", version = shared.session.version }, START)
+        local ready = START + tuning.trade.accept_delay
+        cross.apply(coord, "trade", 1, { kind = "accept", version = shared.session.version }, ready)
+        cross.apply(coord, "trade", 2, { kind = "accept", version = shared.session.version }, ready)
         local _, locked = coord.get("trade")
 
         return locked.session.lock_at
@@ -174,6 +180,33 @@ return function()
             expect(cross.prepare(coord, sim.ports, shared_of(coord), sim:account(b))).to.equal("aborted")
             expect(cross.resume(coord, sim.ports, shared_of(coord), sim:account(a))).to.equal("aborted")
             expect(next(a.data.escrow)).to.equal(nil)
+        end)
+
+        it("writes nothing for a change that changes nothing", function()
+            local _, coord, _, b, item_id = setup()
+            agree(coord, b, item_id)
+            local before = #coord.writes
+            local rev = shared_of(coord).rev
+            local version = shared_of(coord).session.version
+            local _, _, unchanged = cross.apply(coord, "trade", 1, { kind = "coins", amount = 20 }, START + 10)
+            local _, _, absent = cross.apply(coord, "trade", 1, { kind = "remove", item_id = "nothing" }, START + 10)
+            local _, _, again = cross.apply(coord, "trade", 2, { kind = "accept", version = version }, START + 10)
+            expect(unchanged).to.equal("unchanged")
+            expect(absent).to.equal("unchanged")
+            expect(again).to.equal("unchanged")
+            expect(#coord.writes).to.equal(before)
+            expect(shared_of(coord).rev).to.equal(rev)
+        end)
+
+        it("lets a closed session expire soon instead of after the full session lifetime", function()
+            local _, coord, _, b, item_id = setup()
+            agree(coord, b, item_id)
+            expect(table.find(coord.writes, true)).to.equal(nil)
+            cross.apply(coord, "trade", 1, { kind = "cancel" }, START + 10)
+            expect(coord.writes[#coord.writes]).to.equal(true)
+            local _, other = setup()
+            cross.record(other, "trade", "aborted", "b_items")
+            expect(other.writes[#other.writes]).to.equal(true)
         end)
 
         it("records the outcome once", function()

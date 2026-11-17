@@ -119,6 +119,19 @@ local function chip(name: string, kind: string, selected: boolean, on_click: (()
     return create("Frame", { Name = name, BackgroundColor3 = theme.RAISED }, children)
 end
 
+local function accept_label(view: store.View): string
+    if view.me.accepted then
+        return "Accepted"
+    end
+
+    local wait = store.accept_in()
+    if wait > 0 then
+        return `Accept ({math.ceil(wait)})`
+    end
+
+    return "Accept"
+end
+
 local function status_of(view: store.View, them: string, now: number): (string, Color3)
     if view.status == "negotiating" then
         local lock_in = view.lock_in
@@ -262,8 +275,11 @@ function ui.start()
 
     local function pick(user_id: number)
         if mode == "trade" then
-            store.invite(user_id)
-            notices.show(`Invite sent to {names.get(user_id, rerender)}`)
+            if store.invite(user_id) then
+                notices.show(`Invite sent to {names.get(user_id, rerender)}`)
+            else
+                notices.show("Could not send the invite, try again in a moment")
+            end
         elseif mode == "gift" then
             gift_target = user_id
             table.clear(gift_selection)
@@ -456,7 +472,16 @@ function ui.start()
             return
         end
 
-        store.gift(target, coins, ids)
+        if #ids > tuning.trade.max_items_per_side then
+            notices.show(`Pick at most {tuning.trade.max_items_per_side} items`)
+            return
+        end
+
+        if not store.gift(target, coins, ids) then
+            notices.show("Could not send the gift, try again in a moment")
+            return
+        end
+
         notices.show(`Gift sent to {names.get(target, rerender)}`)
         gift_target = nil
         gift_coins.Text = ""
@@ -579,7 +604,7 @@ function ui.start()
 
         coins_box.PlaceholderText = `Coins, up to {state.inventory.coins}`
         accept.Visible = open_trade
-        accept.Text = if view.me.accepted then "Accepted" else "Accept"
+        accept.Text = accept_label(view)
         accept.BackgroundColor3 = if view.me.accepted then theme.RAISED else theme.GOOD
         set_coins.Visible = open_trade
         coins_box.Visible = open_trade
@@ -684,6 +709,7 @@ function ui.start()
         local message, color = status_of(view, if them_id then names.get(them_id, rerender) else "them", now)
         trade_status.Text = message
         trade_status.TextColor3 = color
+        accept.Text = accept_label(view)
     end)
 
     render()

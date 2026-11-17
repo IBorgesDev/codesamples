@@ -6,6 +6,7 @@ local replicated_storage = game:GetService("ReplicatedStorage")
 
 local coordinator = require(script.Parent.coordinator)
 local cross = require(script.Parent.cross)
+local guard = require(script.Parent.Parent.net.guard)
 local negotiation = require(script.Parent.negotiation)
 local net = require(replicated_storage.Shared.net)
 local profiles = require(script.Parent.Parent.data.profiles)
@@ -49,7 +50,10 @@ local cross_service = {}
 local entries: { [Player]: Entry } = {}
 local by_session: { [string]: Entry } = {}
 local outgoing: { [Player]: { to: number, at: number } } = {}
-local invites: { [Player]: { from: number, server: string, at: number } } = {}
+local invites: { [Player]: { [number]: { server: string, at: number } } } = {}
+local joining: { [Player]: boolean } = {}
+local last_answer: { [Player]: number } = {}
+local limiter = guard.limiter(CONFIG.cross_pace)
 local context: Context
 
 local function wall_now(): number
@@ -283,6 +287,22 @@ local function tick()
     end
 end
 
+local function pending_invites(target: Player, now: number): { [number]: { server: string, at: number } }
+    local list = invites[target]
+    if list == nil then
+        list = {}
+        invites[target] = list
+    end
+
+    for from, invite in list do
+        if now - invite.at > CONFIG.invite_timeout then
+            list[from] = nil
+        end
+    end
+
+    return list
+end
+
 local function on_invite(message: coordinator.Message)
     local from, to, server = message.from, message.to, message.server
     if type(from) ~= "number" or type(to) ~= "number" or type(server) ~= "string" then
@@ -290,11 +310,22 @@ local function on_invite(message: coordinator.Message)
     end
 
     local target = players:GetPlayerByUserId(to)
-    if target == nil or context.busy(target) or entries[target] or profiles.get(target) == nil then
+    if target == nil or cross_service.busy(target) or context.busy(target) or profiles.get(target) == nil then
         return
     end
 
-    invites[target] = { from = from, server = server, at = os.clock() }
+    local now = os.clock()
+    local list = pending_invites(target, now)
+    local count = 0
+    for _ in list do
+        count += 1
+    end
+
+    if list[from] or count >= CONFIG.max_invites then
+        return
+    end
+
+    list[from] = { server = server, at = now }
     net.trade.invited:fire(target, from)
 end
 
@@ -338,7 +369,7 @@ local function on_message(message: coordinator.Message)
 end
 
 function cross_service.busy(player: Player): boolean
-    return entries[player] ~= nil
+    return entries[player] ~= nil or joining[player] == true
 end
 
 function cross_service.invite(player: Player, target_id: number): boolean
@@ -354,25 +385,40 @@ function cross_service.invite(player: Player, target_id: number): boolean
 end
 
 function cross_service.answer(player: Player, from_id: number, accept: boolean): boolean?
-    local invite = invites[player]
-    if invite == nil or invite.from ~= from_id then
+    local list = invites[player]
+    local invite = if list then list[from_id] else nil
+    if list == nil or invite == nil then
         return nil
     end
 
-    invites[player] = nil
+    list[from_id] = nil
+    local now = os.clock()
     if
         not accept
-        or os.clock() - invite.at > CONFIG.invite_timeout
+        or now - invite.at > CONFIG.invite_timeout
+        or now - (last_answer[player] or -math.huge) < CONFIG.cross_answer_cooldown
         or context.busy(player)
-        or entries[player]
+        or cross_service.busy(player)
         or profiles.get(player) == nil
     then
         return false
     end
 
+    last_answer[player] = now
     local session_id = http_service:GenerateGUID(false)
     local shared = cross.new(session_id, from_id, player.UserId, invite.server, server_id)
-    if not context.coord.create(shared) then
+    joining[player] = true
+    local created = context.coord.create(shared)
+    joining[player] = nil
+    if not created then
+        return false
+    end
+
+    if player.Parent ~= players or profiles.get(player) == nil then
+        local user_id = player.UserId
+        task.spawn(function()
+            cross.apply(context.coord, session_id, user_id, { kind = "cancel" }, wall_now())
+        end)
         return false
     end
 
@@ -392,6 +438,10 @@ function cross_service.apply(player: Player, op: negotiation.Op): boolean?
     end
 
     if entry.status ~= "negotiating" or entry.closes_at then
+        return false
+    end
+
+    if op.kind ~= "cancel" and not limiter:take(player) then
         return false
     end
 
@@ -433,6 +483,8 @@ function cross_service.start(new_context: Context)
     players.PlayerRemoving:Connect(function(player)
         invites[player] = nil
         outgoing[player] = nil
+        joining[player] = nil
+        last_answer[player] = nil
         local entry = entries[player]
         if entry then
             remove(entry)

@@ -37,7 +37,7 @@ function cross.apply(
         end
 
         return negotiation.apply(shared.session, user_id, op, now)
-    end)
+    end, op.kind == "cancel")
 end
 
 function cross.record(coord: Coordinator, session_id: string, outcome: string, why: string?): boolean
@@ -50,7 +50,7 @@ function cross.record(coord: Coordinator, session_id: string, outcome: string, w
         shared.reason = why
 
         return true, nil
-    end)
+    end, true)
 
     return stored
 end

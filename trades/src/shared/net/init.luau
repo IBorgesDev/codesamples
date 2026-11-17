@@ -4,6 +4,7 @@ local replicated_storage = game:GetService("ReplicatedStorage")
 local run_service = game:GetService("RunService")
 
 local remote = require(script.remote)
+local tuning = require(replicated_storage.Shared.config.tuning)
 
 local tree = {
     trade = {
@@ -13,7 +14,7 @@ local tree = {
         offer_coins = remote.to_server(),
         accept = remote.to_server(),
         cancel = remote.to_server(),
-        gift = remote.to_server(),
+        gift = remote.to_server(tuning.trade.gift_pace),
         invited = remote.to_client(),
         view = remote.state(),
         inventory = remote.state(),

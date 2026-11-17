@@ -49,7 +49,7 @@ export type Event = {
 local trade = {}
 
 local active: { [Player]: Trade } = {}
-local invites: { [Player]: { from: Player, at: number } } = {}
+local invites: { [Player]: { [number]: { from: Player, at: number } } } = {}
 local last_invite: { [Player]: number } = {}
 local listeners: { (Event) -> () } = {}
 
@@ -139,7 +139,7 @@ local function execute(entry: Trade)
         local prepared, prepared_why = protocol.prepare(ports, b.account, tx_id)
         outcome = prepared
         why = prepared_why
-        if prepared == "committed" then
+        if prepared == "committed" or prepared == "aborted" or prepared == "refused" then
             protocol.finalize(ports, a.account, tx_id)
         end
     end
@@ -221,7 +221,26 @@ function trade.invite(player: Player, target_id: number): boolean
         return false
     end
 
-    invites[target] = { from = player, at = now }
+    local list = invites[target]
+    if list == nil then
+        list = {}
+        invites[target] = list
+    end
+
+    local count = 0
+    for from_id, invite in list do
+        if now - invite.at > CONFIG.invite_timeout or invite.from.Parent ~= players then
+            list[from_id] = nil
+        else
+            count += 1
+        end
+    end
+
+    if list[player.UserId] or count >= CONFIG.max_invites then
+        return false
+    end
+
+    list[player.UserId] = { from = player, at = now }
     net.trade.invited:fire(target, player.UserId)
 
     return true
@@ -233,12 +252,17 @@ function trade.answer(player: Player, from_id: number, accept: boolean): boolean
         return remote
     end
 
-    local invite = invites[player]
-    if invite == nil or invite.from.UserId ~= from_id or os.clock() - invite.at > CONFIG.invite_timeout then
+    local list = invites[player]
+    local invite = if list then list[from_id] else nil
+    if list == nil or invite == nil then
         return false
     end
 
-    invites[player] = nil
+    list[from_id] = nil
+    if os.clock() - invite.at > CONFIG.invite_timeout then
+        return false
+    end
+
     local from = invite.from
     if not accept or busy(player) or busy(from) or from.Parent ~= players then
         return false
@@ -354,6 +378,7 @@ function trade.start()
             maps = CONFIG.coordinator_maps,
             presence_ttl = CONFIG.presence_ttl,
             session_ttl = CONFIG.session_ttl,
+            closed_ttl = CONFIG.closed_ttl,
             backoff_base = CONFIG.backoff_base,
             backoff_cap = CONFIG.backoff_cap,
         }),

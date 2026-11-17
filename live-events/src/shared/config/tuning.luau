@@ -5,8 +5,11 @@ local tuning = {}
 tuning.net = table.freeze({
     request_timeout = 10,
     sync_cooldown = 1,
-    default_rate = 10,
-    default_burst = 20,
+    default_pace = table.freeze({ rate = 10, burst = 20 }),
+    global_pace = table.freeze({ rate = 20, burst = 40 }),
+    strike_limit = 5,
+    strike_window = 60,
+    flood_limit = 300,
 })
 
 tuning.profiles = table.freeze({
@@ -36,6 +39,8 @@ tuning.live_event = table.freeze({
     lease_seconds = 10,
     lease_passes = 2.5,
     max_staleness = 30,
+    vote_pace = table.freeze({ rate = 1 / 30, burst = 3 }),
+    vote_min_budget = 4,
     backoff_base = 2,
     backoff_cap = 60,
     max_replicas = 1024,

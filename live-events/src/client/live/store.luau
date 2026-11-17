@@ -50,8 +50,13 @@ function store.on_reward(listener: (string) -> ())
     table.insert(reward_listeners, listener)
 end
 
-function store.vote(event_id: string, option: string)
-    net.live.vote:fire(event_id, option)
+function store.vote(event_id: string, option: string): boolean
+    local current = mine.votes[event_id]
+    if current and current.option == option then
+        return true
+    end
+
+    return net.live.vote:fire(event_id, option)
 end
 
 function store.start()

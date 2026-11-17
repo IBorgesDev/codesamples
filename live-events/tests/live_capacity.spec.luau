@@ -159,6 +159,36 @@ return function()
             end
         end)
 
+        it("still fits 76M CCU when cheaters change their vote as fast as the guard lets them", function()
+            for _, size in { 4, 8 } do
+                local function fits(share)
+                    local plan = planner.plan({
+                        name = "flippers",
+                        ccu = 76_000_000,
+                        players_per_server = size,
+                        churn = 1.5,
+                        events = 2,
+                        options = 3,
+                        voter_share = 1,
+                        flipper_share = share,
+                    })
+                    return #planner.check(plan) == 0
+                end
+
+                local share = 0
+                while share < 1 and fits(share + 0.001) do
+                    share += 0.001
+                end
+
+                print(
+                    `[capacity] 76M at {size} per server fits {round(share * 100, 1)}% of players flipping their vote every {round(
+                        1 / tuning.live_event.vote_pace.rate
+                    )} s`
+                )
+                expect(share >= 0.01).to.equal(true)
+            end
+        end)
+
         it("each simpler design breaks below a tenth of a 14.3M CCU peak", function()
             local scenario = SCENARIOS[6]
             for _, point in planner.breakpoints(scenario) do

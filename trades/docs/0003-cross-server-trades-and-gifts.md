@@ -26,7 +26,10 @@ crashes, lost messages and retries, at the largest Roblox peaks (25.8M CCU, abou
   sent that invite; if not, it cancels the session.
 - **Negotiation.** The session key holds the same `negotiation.Session` as a same-server trade and
   changes only through `UpdateAsync` transforms that run `negotiation.apply` on a copy. Every change
-  bumps `rev`, and a server ignores reads older than what it already has.
+  bumps `rev`, and a server ignores reads older than what it already has. An operation that changes
+  nothing (the same coins, an item already offered, a second accept) is refused, so it writes nothing
+  and sends no hint. The session lives 15 minutes after its last write while it is open, and 60 s
+  once it is cancelled or decided.
 - **Sync.** Each server polls its sessions every 2 s. After every change it sends a `changed` hint to
   the other server, which polls at once. A lost hint costs one poll interval, nothing more.
 - **Commit.** The inviter's server (A) locks the session and writes `tx_id` in one `UpdateAsync`, so

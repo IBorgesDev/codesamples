@@ -3,6 +3,7 @@ return function()
     local server_script_service = game:GetService("ServerScriptService")
     local guard = require(server_script_service.Server.net.guard)
     local remote = require(replicated_storage.Shared.net.remote)
+    local tuning = require(replicated_storage.Shared.config.tuning)
 
     local t = guard.t
     const NAN = 0 / 0
@@ -106,7 +107,7 @@ return function()
 
         it("rejects over the rate limit", function()
             local now = 0
-            local limiter = guard.limiter(1, 2, function()
+            local limiter = guard.limiter({ rate = 1, burst = 2 }, function()
                 return now
             end)
 
@@ -120,6 +121,102 @@ return function()
             now += 1
             expect(handle(player)).to.equal(true)
             expect(guard.rejects()["spec.rate"].rate).to.equal(1)
+        end)
+
+        it("contains a handler error, counts it and keeps serving", function()
+            local fail = true
+            local handle = guard.handler("spec.error", nil, {}, function()
+                if fail then
+                    error("boom")
+                end
+
+                return true
+            end)
+
+            expect(handle({} :: any)).to.equal(remote.REJECTED)
+            fail = false
+            expect(handle({} :: any)).to.equal(true)
+            expect(guard.rejects()["spec.error"].error).to.equal(1)
+        end)
+
+        it("reports malformed payloads and flooding separately, per player", function()
+            local seen = {}
+            local stop = guard.on_violation(function(who, name, category, count)
+                table.insert(seen, { who = who, name = name, category = category, count = count })
+            end)
+            local cheater = {} :: any
+            local handle = guard.handler(
+                "spec.violation",
+                guard.limiter({ rate = 1, burst = 2 }),
+                { t.boolean },
+                function()
+                    return true
+                end
+            )
+
+            handle(cheater, "not a boolean")
+            handle(cheater, true, "extra")
+            handle(cheater, true)
+            stop()
+
+            expect(#seen).to.equal(3)
+            expect(seen[1].category).to.equal("malformed")
+            expect(seen[2].category).to.equal("malformed")
+            expect(seen[2].count).to.equal(2)
+            expect(seen[3].category).to.equal("flood")
+            expect(seen[3].who).to.equal(cheater)
+        end)
+
+        it("never rejects a client that paces itself with the server's buckets", function()
+            local now = 0
+            local function clock()
+                return now
+            end
+            local pace = { rate = 1 / 30, burst = 3 }
+            local pacer = remote.pacer(clock)
+            local handle = guard.handler("spec.paced", guard.limiter(pace, clock), {}, function()
+                return true
+            end)
+            local honest = {} :: any
+            local random = Random.new(7)
+            local sent, dropped, rejected = 0, 0, 0
+            for _ = 1, 1000 do
+                now += random:NextNumber(0, 1)
+                if pacer(pace) then
+                    sent += 1
+                    if handle(honest) ~= true then
+                        rejected += 1
+                    end
+                else
+                    dropped += 1
+                end
+            end
+
+            expect(sent > pace.burst).to.equal(true)
+            expect(dropped > 0).to.equal(true)
+            expect(rejected).to.equal(0)
+        end)
+
+        it("caps a player's total across every remote, not only per remote", function()
+            local spender = {} :: any
+            local handles = {}
+            for i = 1, 4 do
+                handles[i] = guard.handler(`spec.global{i}`, nil, {}, function()
+                    return true
+                end)
+            end
+
+            local accepted = 0
+            for _ = 1, 12 do
+                for _, handle in handles do
+                    if handle(spender) == true then
+                        accepted += 1
+                    end
+                end
+            end
+
+            expect(accepted >= tuning.net.global_pace.burst).to.equal(true)
+            expect(accepted <= tuning.net.global_pace.burst + 2).to.equal(true)
         end)
     end)
 end

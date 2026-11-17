@@ -1,5 +1,6 @@
 --!strict
 
+local data_store_service = game:GetService("DataStoreService")
 local players = game:GetService("Players")
 local replicated_storage = game:GetService("ReplicatedStorage")
 local run_service = game:GetService("RunService")
@@ -215,15 +216,22 @@ function live.vote(player: Player, event_id: string, option: string): boolean
         return false
     end
 
+    if
+        data_store_service:GetRequestBudgetForRequestType(Enum.DataStoreRequestType.UpdateAsync)
+        < CONFIG.vote_min_budget
+    then
+        return false
+    end
+
     voting[player] = true
     local cast = ballot.next(previous, option)
     data.live_votes[event_id] = cast
-    local landed = loaded.account.persist(function(saved)
+    local ok, landed = pcall(loaded.account.persist, function(saved)
         return ballot.same(saved.live_votes[event_id], cast)
     end)
     voting[player] = nil
 
-    if not landed then
+    if not ok or not landed then
         data.live_votes[event_id] = previous
         return false
     end
@@ -577,7 +585,7 @@ function live.start()
     net.live.vote:on(
         guard.handler(
             "live.vote",
-            guard.limiter(1, 3),
+            guard.limiter(CONFIG.vote_pace),
             { t.string(48), t.string(32) },
             function(player, event_id: string, option: string)
                 return live.vote(player, event_id, option)

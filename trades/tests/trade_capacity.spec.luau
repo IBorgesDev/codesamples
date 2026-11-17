@@ -1,6 +1,8 @@
 return function()
+    local replicated_storage = game:GetService("ReplicatedStorage")
     local server_script_service = game:GetService("ServerScriptService")
     local capacity = require(server_script_service.Server.trade.capacity)
+    local tuning = require(replicated_storage.Shared.config.tuning)
 
     const LOAD = {
         session_minutes = 20,
@@ -39,6 +41,30 @@ return function()
                 )
             end)
         end
+
+        it("still fits 76M CCU when cheaters churn cross-server sessions and changes at the guard's limit", function()
+            for _, size in SERVER_SIZES do
+                local function fits(share)
+                    local load = table.clone(LOAD)
+                    load.spammer_share = share
+                    return #capacity.check(
+                        capacity.plan({ name = "spam", ccu = 76_000_000, players_per_server = size }, load)
+                    ) == 0
+                end
+
+                local share = 0
+                while share < 1 and fits(share + 0.001) do
+                    share += 0.001
+                end
+
+                print(
+                    `[trade capacity] 76M at {size} per server fits {math.round(share * 1000) / 10}% of players `
+                        .. `opening a cross-server session every {tuning.trade.cross_answer_cooldown} s and changing it `
+                        .. `every {math.round(1 / tuning.trade.cross_pace.rate)} s`
+                )
+                expect(share >= 0.01).to.equal(true)
+            end
+        end)
 
         it("finds the largest CCU the design fits for each server size", function()
             for _, size in SERVER_SIZES do
