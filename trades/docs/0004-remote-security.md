@@ -75,7 +75,10 @@ trade that B aborts releases A's escrow at once instead of at the next 30 s swee
   item not owned, offering 1e9 coins, accepting and cancelling with no trade) and 60 calls to
   server-to-client remotes changed nothing (inventory identical, no view pushed). 4 malformed
   payloads were refused and counted, and the 5th kicked the player. A client paced by the shared
-  module sent 20 of 100 cancels and 3 of 10 gifts, and the server refused none.
+  module sent 20 of 100 cancels and 3 of 10 gifts, and the server refused none. In the trade
+  window, Accept counts the wait down and a click during it sends nothing; the first click after it
+  sends the accept with the current version. The real-service benchmarks and `StressTest` still
+  commit and conserve everything ([decision 0003](0003-cross-server-trades-and-gifts.md)).
 - **Abuse fits the quotas.** `trade_capacity.spec` adds players who open a cross-server session
   every 10 s and change it every 3 s for good: at 76M CCU the design still fits with 1.4% of all
   players doing it at once.

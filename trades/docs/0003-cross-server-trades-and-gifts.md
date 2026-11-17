@@ -90,7 +90,11 @@ crashes, lost messages and retries, at the largest Roblox peaks (25.8M CCU, abou
   cross-server trades committed (settlement p50 4.27 s, hints p50 0.2 s), 20 trades on one server
   (p50 2.25 s), 20 gifts (p50 1.32 s), and `StressTest` (6 trades at once, one item in two trades,
   4 cross-server trades with 3 servers racing for one lock, 12 gifts each sent twice) conserved
-  every item and coin.
+  every item and coin. Re-run after the remote hardening ([decision 0004](0004-remote-security.md)):
+  20 of 20 cross-server trades (settlement p50 4.10 s, 10 MemoryStore calls per trade, hints p50
+  0.21 s), 20 of 20 on one server (p50 2.24 s), 20 of 20 gifts twice (p50 1.80 s and 1.65 s, with
+  writes to the receiver's inbox key queued by DataStore) and `StressTest`, all conserved with no
+  escrow or outbox entry left.
 - **Ceiling.** At the same load the design fits up to 210M CCU with 4 or 8 players per server
   (`trade_capacity.spec` searches it), so 76M uses 108,000 RU/min on the busiest map. The first
   limit is the busiest of the 1,024 coordinator maps reaching 300,000 RU/min (half of 20 partitions
